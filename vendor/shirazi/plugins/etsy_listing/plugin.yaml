@@ -1,0 +1,5 @@
+name: etsy_listing
+version: 1.0.0
+description: Etsy listing helper for DottedCreatives — you write the listing copy, this validates Etsy's real constraints; plus deterministic Pakistan fee math for pricing.
+permissions: []
+actions: [listing_create, listing_check, price_suggest]

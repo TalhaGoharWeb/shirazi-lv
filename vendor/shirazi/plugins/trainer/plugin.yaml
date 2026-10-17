@@ -1,0 +1,5 @@
+name: trainer
+version: 1.0.0
+description: Teach Shirazi — facts, preferences, corrections and custom commands. A curated, reviewable knowledge base: what you teach here is listed, tested and deletable.
+permissions: [files:write]
+actions: [train_fact, train_preference, train_correction, train_command, training_list, training_forget, train_test]

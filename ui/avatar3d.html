@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%;
+               overflow: hidden; background: transparent; }
+  #c { width: 100%; height: 100%; display: block; }
+  #err { position: absolute; top: 8px; left: 8px; color: #FF647C;
+         font: 12px sans-serif; display: none; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "./three/three.module.js",
+    "three/addons/": "./three/addons/"
+} }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="err"></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const errBox = document.getElementById('err');
+function fail(msg) { errBox.style.display = 'block'; errBox.textContent = msg;
+                     window.__avatar_error = msg; }
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+renderer.setClearColor(0x000000, 0);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 100);
+
+// heroic lighting for the Mark III helmet: warm key, cool rim, arc-reactor fill
+scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x0a0e1a, 0.7));
+const key = new THREE.DirectionalLight(0xfff2e0, 2.0);
+key.position.set(2.5, 3.5, 4); scene.add(key);
+const rim = new THREE.DirectionalLight(0x38BDF8, 1.6);
+rim.position.set(-3, 1.5, -2.5); scene.add(rim);
+const eyeGlow = new THREE.PointLight(0x9fd8ff, 8, 10);
+eyeGlow.position.set(0, 0.1, 1.2); scene.add(eyeGlow);
+
+let model = null;
+let bobPhase = 0;
+let eyeMats = [];   // emissive eye/arc materials to pulse with speech
+window.__avatar_ready = false;
+
+new GLTFLoader().load('../assets/avatar/ironman.glb', (gltf) => {
+  model = gltf.scene;
+  // centre + normalize: the Mark III helmet ships ~84 units wide in its own
+  // units — far beyond the camera's far plane at naive framing. Scale it to
+  // a predictable ~2 units tall so camera and lights behave for any model.
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const s = 2.0 / Math.max(size.y, 0.001);
+  model.scale.setScalar(s);
+  model.position.copy(center.multiplyScalar(-s));
+  camera.position.set(0, 0.12, 4.2);
+  camera.lookAt(0, 0, 0);
+
+  // find emissive materials (eyes / arc reactor) for the speech pulse.
+  // store their AUTHORED intensity — we pulse relative to it, never replace it.
+  model.traverse((o) => {
+    if (o.isMesh && o.material) {
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (m.emissive && m.emissiveMap &&
+            !eyeMats.some((e) => e.mat === m)) {
+          eyeMats.push({ mat: m, base: m.emissiveIntensity || 1 });
+        }
+      }
+    }
+  });
+
+  scene.add(model);
+  window.__avatar_ready = true;
+}, undefined, (e) => fail('model load failed: ' + (e && e.message || e)));
+
+const clock = new THREE.Clock();
+let stateName = 'IDLE';
+let amp = 0;
+let smoothAmp = 0;
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+// API called from Python via runJavaScript
+window.shiraziAvatar = {
+  setState(s) { stateName = String(s || 'IDLE').toUpperCase(); },
+  setAmp(v) { amp = Math.max(0, Math.min(1, Number(v) || 0)); },
+  ready() { return window.__avatar_ready === true; },
+  // Deep diagnostics for the "blank 3D view" issue — reports what actually
+  // happened inside the page: model load, canvas size, framing, pixels.
+  diag() {
+    const c = renderer.domElement;
+    const out = {
+      ready: window.__avatar_ready === true,
+      error: window.__avatar_error || null,
+      canvasW: c.width, canvasH: c.height,
+      cssW: innerWidth, cssH: innerHeight,
+      hasModel: !!model,
+      camPos: camera.position.toArray().map(v => +v.toFixed(2)),
+      camFar: camera.far,
+      webgl: (() => { try { return !!renderer.getContext(); }
+                      catch (e) { return 'ctx-fail: ' + e; } })(),
+    };
+    if (model) {
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const ctr = box.getCenter(new THREE.Vector3());
+      out.modelSize = size.toArray().map(v => +v.toFixed(2));
+      out.modelCenter = ctr.toArray().map(v => +v.toFixed(2));
+      let meshes = 0;
+      model.traverse(o => { if (o.isMesh) meshes++; });
+      out.meshes = meshes;
+      out.modelVisible = model.visible;
+    }
+    // pixel probe: render once more, sample the centre pixel
+    try {
+      renderer.render(scene, camera);
+      const gl = renderer.getContext();
+      const px = new Uint8Array(4);
+      gl.readPixels(Math.floor(c.width / 2), Math.floor(c.height / 2),
+                    1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      out.centerPixel = Array.from(px);
+    } catch (e) { out.pixelErr = String((e && e.message) || e); }
+    return out;
+  },
+};
+
+function tick() {
+  requestAnimationFrame(tick);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const speaking = (stateName === 'SPEAKING');
+  const listening = (stateName === 'LISTENING');
+  // smooth the amplitude so motion never jumps
+  smoothAmp += (amp - smoothAmp) * Math.min(1, dt * 8);
+
+  if (model) {
+    // gentle heroic idle sway; speaking adds amp-driven nod energy.
+    // every bit of motion comes from the REAL audio amplitude — never faked.
+    const energy = speaking ? smoothAmp : (listening ? 0.15 : 0.05);
+    bobPhase += dt * (1.1 + energy * 4.0);
+    model.rotation.y = Math.sin(bobPhase * 0.32) * 0.10;
+    model.rotation.x = Math.sin(bobPhase * 0.55) * 0.03 * (1 + energy * 3);
+    model.position.y = Math.sin(bobPhase) * 0.012 * (1 + energy * 2.5);
+  }
+  // eye/arc glow breathes with speech intensity (real amp only),
+  // pulsing AROUND the authored intensity — never replacing it
+  const glow = 6 + smoothAmp * 14 * (speaking ? 1 : 0.25);
+  eyeGlow.intensity = glow;
+  for (const e of eyeMats) {
+    try { e.mat.emissiveIntensity =
+            e.base * (0.85 + smoothAmp * 0.45 * (speaking ? 1 : 0.2)); }
+    catch (err) {}
+  }
+  // rim light shifts hue subtly by state
+  if (stateName === 'AWAITING_APPROVAL') rim.color.setHex(0xF2B84B);
+  else if (stateName === 'ERROR') rim.color.setHex(0xFF647C);
+  else if (stateName === 'THINKING') rim.color.setHex(0x20D6B0);
+  else rim.color.setHex(0x38BDF8);
+
+  renderer.render(scene, camera);
+}
+tick();
+</script>
+</body>
+</html>

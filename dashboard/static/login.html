@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#020409">
+  <title>SHIRAZI · Neural Link</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:     #020409;
+      --cyan:   #00f0ff;
+      --violet:#8b5cf6;
+      --text:   #d7e6f5;
+      --muted:  #5b6b85;
+    }
+    html, body {
+      height: 100%; background: var(--bg); color: var(--text);
+      font-family: 'Rajdhani', -apple-system, 'Segoe UI', sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden; -webkit-tap-highlight-color: transparent;
+    }
+    #cosmos { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+    .aurora {
+      position: fixed; inset: -20%; z-index: 0; pointer-events: none; opacity: .5;
+      background:
+        radial-gradient(42% 32% at 50% 40%, rgba(0,240,255,.16), transparent 70%),
+        radial-gradient(38% 30% at 80% 85%, rgba(139,92,246,.18), transparent 70%);
+      filter: blur(34px);
+      animation: drift 24s ease-in-out infinite alternate;
+    }
+    @keyframes drift { from { transform: translate3d(-3%,-2%,0) scale(1);} to { transform: translate3d(3%,3%,0) scale(1.08);} }
+
+    .stage { position: relative; z-index: 1; width: 100%; max-width: 380px; padding: 24px; display: flex; flex-direction: column; align-items: center; }
+
+    /* rotating rings around the core */
+    .rings { position: relative; width: 150px; height: 150px; margin-bottom: 8px; }
+    .rings::before, .rings::after {
+      content: ''; position: absolute; inset: 0; border-radius: 50%;
+      border: 1px dashed rgba(0,240,255,.35);
+    }
+    .rings::before { animation: spin 14s linear infinite; inset: 6px; }
+    .rings::after  { animation: spin 22s linear infinite reverse; border-color: rgba(139,92,246,.35); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .core {
+      position: absolute; inset: 34px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #d8fdff 0%, var(--cyan) 30%, #0a5b66 65%, #02141a 100%);
+      box-shadow: 0 0 34px rgba(0,240,255,.65), inset 0 0 14px rgba(255,255,255,.35);
+      animation: breathe 3s ease-in-out infinite;
+    }
+    @keyframes breathe { 0%,100% { box-shadow: 0 0 26px rgba(0,240,255,.5), inset 0 0 14px rgba(255,255,255,.3);} 50% { box-shadow: 0 0 52px rgba(0,240,255,.85), inset 0 0 18px rgba(255,255,255,.5);} }
+
+    .card {
+      width: 100%; margin-top: 18px; padding: 34px 30px 30px;
+      background: rgba(8,15,30,.62);
+      border: 1px solid rgba(0,240,255,.18); border-radius: 24px;
+      text-align: center; position: relative; overflow: hidden;
+      backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+      box-shadow: 0 0 44px rgba(0,240,255,.10), inset 0 0 40px rgba(0,240,255,.03);
+    }
+    .card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+      opacity: .7;
+    }
+    .logo {
+      font-family: 'Orbitron', sans-serif; font-size: 26px; font-weight: 900;
+      letter-spacing: 10px; margin-bottom: 4px; color: #eaf6ff;
+      text-shadow: 0 0 14px rgba(0,240,255,.8), 0 0 40px rgba(0,240,255,.35);
+    }
+    .logo em { color: var(--cyan); font-style: normal; }
+    .sub { font-size: 10px; color: var(--muted); letter-spacing: 5px; text-transform: uppercase; margin-bottom: 8px; font-weight: 600; }
+    .hint { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 26px; font-weight: 500; }
+    .hint strong { color: var(--text); }
+    .key-wrap { position: relative; margin-bottom: 14px; }
+    .key-input {
+      width: 100%; padding: 18px 14px;
+      background: rgba(0,240,255,.04);
+      border: 1.5px solid rgba(0,240,255,.25); border-radius: 16px;
+      color: #eaf6ff; font-size: 30px; font-weight: 700; font-family: 'Courier New', monospace;
+      text-align: center; letter-spacing: 10px; text-transform: uppercase;
+      outline: none; transition: all .2s; caret-color: var(--cyan);
+      text-shadow: 0 0 12px rgba(0,240,255,.5);
+    }
+    .key-input::placeholder { color: rgba(91,107,133,.5); letter-spacing: 6px; font-size: 20px; text-shadow: none; }
+    .key-input:focus {
+      border-color: var(--cyan); background: rgba(0,240,255,.08);
+      box-shadow: 0 0 24px rgba(0,240,255,.3), inset 0 0 16px rgba(0,240,255,.06);
+    }
+    .err { font-size: 12px; color: #ff5470; min-height: 18px; margin-bottom: 12px; font-weight: 600; letter-spacing: .5px; }
+    .btn {
+      width: 100%; padding: 15px; border: none; border-radius: 14px; cursor: pointer;
+      background: linear-gradient(135deg, var(--cyan), #4da6ff); color: #02141a;
+      font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 4px;
+      box-shadow: 0 0 26px rgba(0,240,255,.45); transition: all .18s;
+    }
+    .btn:hover  { filter: brightness(1.12); box-shadow: 0 0 36px rgba(0,240,255,.65); }
+    .btn:active { transform: scale(.98); }
+    @keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
+    .shake { animation: shake .35s ease; }
+    .voice-note { font-size: 11px; color: var(--muted); margin-top: 20px; line-height: 1.65; text-align: left; font-weight: 500; }
+    .voice-note strong { color: var(--text); }
+    .voice-note code {
+      background: rgba(0,240,255,.08); border: 1px solid rgba(0,240,255,.18);
+      padding: 1px 5px; border-radius: 4px; font-family: 'Courier New', monospace;
+      font-size: 10px; color: var(--cyan);
+    }
+    #reconnecting { display: none; color: var(--cyan); font-size: 12px; letter-spacing: 2px; margin-bottom: 14px; font-weight: 600; animation: blink 1.4s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+  </style>
+</head>
+<body>
+  <canvas id="cosmos"></canvas>
+  <div class="aurora"></div>
+
+  <div class="stage">
+    <div class="rings"><div class="core"></div></div>
+    <div class="card" id="card">
+      <div class="logo"><em>S</em>HIRAZI</div>
+      <div class="sub">Neural Link</div>
+      <p id="reconnecting">◈ RE-ESTABLISHING LINK…</p>
+      <p class="hint">Press <strong>Remote Control</strong> in the SHIRAZI desktop app to get a QR code or session key.</p>
+      <div class="key-wrap">
+        <input class="key-input" id="key" type="text" maxlength="6"
+               autocomplete="off" autocorrect="off" spellcheck="false"
+               placeholder="· · · · · ·">
+      </div>
+      <div class="err" id="err"></div>
+      <button class="btn" onclick="doLogin()">ESTABLISH LINK</button>
+      <p class="voice-note">
+        🎤 <strong>Voice uplink:</strong> open
+        <code>chrome://flags</code> on your phone, search
+        <code>Insecure origins treated as secure</code>, add your SHIRAZI URL, tap Relaunch.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    // starfield
+    (function () {
+      const cv = document.getElementById('cosmos');
+      const cx = cv.getContext('2d');
+      let W, H, stars = [];
+      function size() {
+        W = cv.width = innerWidth; H = cv.height = innerHeight;
+        stars = Array.from({ length: Math.min(160, W * H / 8000) }, () => ({
+          x: Math.random() * W, y: Math.random() * H,
+          r: Math.random() * 1.5 + .3, s: Math.random() * .3 + .06,
+          tw: Math.random() * Math.PI * 2,
+          c: Math.random() < .14 ? '139,92,246' : '0,240,255'
+        }));
+      }
+      size(); addEventListener('resize', size);
+      (function tick(t) {
+        cx.clearRect(0, 0, W, H);
+        for (const st of stars) {
+          st.y -= st.s; if (st.y < -4) { st.y = H + 4; st.x = Math.random() * W; }
+          const a = .25 + .55 * Math.abs(Math.sin(t / 900 + st.tw));
+          cx.beginPath(); cx.arc(st.x, st.y, st.r, 0, 7);
+          cx.fillStyle = `rgba(${st.c},${a.toFixed(2)})`; cx.fill();
+        }
+        requestAnimationFrame(tick);
+      })(0);
+    })();
+
+    // Try auto-reconnect with stored device token (set on first QR login)
+    (async function() {
+      const devTok = localStorage.getItem('shirazi_device_token');
+      if (!devTok) return;
+      document.getElementById('reconnecting').style.display = 'block';
+      try {
+        const r = await fetch('/api/device-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_token: devTok }),
+        });
+        const d = await r.json();
+        if (d.ok && d.token) {
+          sessionStorage.setItem('shirazi_key', d.key);
+          sessionStorage.setItem('shirazi_token', d.token);
+          location.replace('/');
+          return;
+        }
+      } catch (_) {}
+      // Device token rejected (server restarted) — clear it and show normal form
+      localStorage.removeItem('shirazi_device_token');
+      document.getElementById('reconnecting').style.display = 'none';
+    })();
+
+    const inp = document.getElementById('key');
+    inp.focus();
+
+    inp.addEventListener('input', () => {
+      inp.value = inp.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
+      if (inp.value.length === 6) doLogin();
+    });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+    async function doLogin() {
+      const key = inp.value.trim();
+      if (key.length < 6) { shake(); return; }
+      let data;
+      try {
+        const r = await fetch('/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: key })
+        });
+        data = await r.json();
+      } catch (e) {
+        document.getElementById('err').textContent = 'Link error — check connection';
+        shake(); return;
+      }
+      if (data.ok && data.token) {
+        sessionStorage.setItem('shirazi_key', key);
+        sessionStorage.setItem('shirazi_token', data.token);
+        location.href = '/';
+      } else {
+        inp.value = '';
+        inp.focus();
+        document.getElementById('err').textContent = 'Invalid or expired key';
+        shake();
+      }
+    }
+
+    function shake() {
+      const c = document.getElementById('card');
+      c.classList.remove('shake');
+      void c.offsetWidth;
+      c.classList.add('shake');
+    }
+  </script>
+</body>
+</html>

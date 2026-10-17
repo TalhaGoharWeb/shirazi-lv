@@ -1,0 +1,5 @@
+name: problem_solver
+version: 1.0.0
+description: Universal Problem Solver router — classify a problem, render the 7-step plan (Detect→Verify→Learn), and route to the right specialist plugin. Pure reasoning contract, no storage of its own.
+permissions: []
+actions: [problem_classify, problem_plan, problem_route]

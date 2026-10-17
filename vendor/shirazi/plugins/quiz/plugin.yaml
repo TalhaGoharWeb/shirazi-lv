@@ -1,0 +1,5 @@
+name: quiz
+version: 1.0.0
+description: Quiz the user on any topic — you write the questions, this validates, grades and formats them. No API calls, no storage, stdlib only.
+permissions: []
+actions: [quiz_start, quiz_grade, quiz_stop]

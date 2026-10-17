@@ -1,0 +1,5 @@
+name: clipboard_plus
+version: 1.0.0
+description: Clipboard get/set plus a 20-entry history. pyperclip is imported lazily and everything degrades gracefully without it.
+permissions: [clipboard, files:write]
+actions: [clipboard_get, clipboard_set, clipboard_history]

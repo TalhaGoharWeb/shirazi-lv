@@ -1,0 +1,5 @@
+name: pc_health
+version: 1.0.0
+description: PC Health Doctor — snapshot CPU/RAM/disk/process vitals (psutil optional, degrades gracefully) and get threshold-based red flags. Read-only; interprets nothing by itself.
+permissions: []
+actions: [health_snapshot, health_report]

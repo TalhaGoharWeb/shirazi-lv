@@ -1,0 +1,5 @@
+name: excel_writer
+version: 1.0.0
+description: Build a real Excel .xlsx spreadsheet from a structured description — headers, rows, totals, charts — saved to the Desktop.
+permissions: [files:write]
+actions: [excel_create]

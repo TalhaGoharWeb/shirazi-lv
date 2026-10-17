@@ -1,0 +1,5 @@
+name: document_review
+version: 1.0.0
+description: Lay out a document's contents — what it commits the user to and each point worth knowing before signing, ordered by severity. You read the document first, then pass your findings.
+permissions: []
+actions: [document_review]

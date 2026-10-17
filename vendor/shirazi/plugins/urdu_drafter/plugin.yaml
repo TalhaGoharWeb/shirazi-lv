@@ -1,0 +1,5 @@
+name: urdu_drafter
+version: 1.0.0
+description: Urdu drafting aid — returns the scholarly-Urdu style contract plus matching glossary terms; you write the Urdu. Glossary is yours to grow.
+permissions: [files:write]
+actions: [urdu_draft, term_add, term_list, term_forget]

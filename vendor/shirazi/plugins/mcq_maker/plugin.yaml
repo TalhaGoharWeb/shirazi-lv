@@ -1,0 +1,5 @@
+name: mcq_maker
+version: 1.0.0
+description: Bilingual MCQ generator/validator for the fiqh content pipeline — you write the MCQs from the article, this validates the schema, fixes the fixable, and reports what was dropped.
+permissions: []
+actions: [mcq_generate, mcq_validate]
