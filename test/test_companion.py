@@ -105,3 +105,29 @@ class CompanionWindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+class HudCanvasInitRegression(unittest.TestCase):
+    """The 3D-avatar edit once truncated HudCanvas.__init__, leaving
+    paintEvent attributes (_grid_cache, hud_style, ...) unset -> crash on
+    startup. This statically verifies __init__ assigns everything
+    paintEvent/_step touch."""
+
+    def test_init_assigns_paintevent_attrs(self):
+        import ast
+        src = open("ui.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        hud = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.ClassDef) and n.name == "HudCanvas")
+        init = next(n for n in hud.body
+                    if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+        assigned = set()
+        for n in ast.walk(init):
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) \
+               and n.value.id == "self":
+                assigned.add(n.attr)
+        for attr in ("_grid_cache", "_grid_key", "hud_style", "_live_amp",
+                     "_amp_disp", "_tick", "_tmr", "_noor", "_avatar3d",
+                     "_avatar3d_ok", "muted", "speaking", "state"):
+            self.assertIn(attr, assigned,
+                          f"HudCanvas.__init__ must assign self.{attr}")

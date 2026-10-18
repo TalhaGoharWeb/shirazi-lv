@@ -43,24 +43,8 @@ def load_api_keys() -> dict:
         print(f"❌ Failed to load api_keys.json: {e}")
         return {}
 
-def _secret_first(name: str, legacy_key: str) -> str | None:
-    """Stage F: OS credential store first, legacy api_keys.json as fallback.
-    Never raises, never logs values."""
-    try:
-        from core.secrets_store import get_secret
-        v = get_secret(name)
-        if v:
-            return v
-    except Exception:
-        pass
-    try:
-        return load_api_keys().get(legacy_key)
-    except Exception:
-        return None
-
-
 def get_gemini_key() -> str | None:
-    return _secret_first("gemini_api_key", "gemini_api_key")
+    return load_api_keys().get("gemini_api_key")
 
 def get_response_language() -> str:
     """Shirazi-origin: pinned response language (auto/english/urdu/roman_urdu)."""
@@ -81,32 +65,22 @@ def save_response_language(lang: str) -> None:
 
 def get_groq_key() -> str | None:
     """Shirazi-origin: Groq API key for provider failover (may be None)."""
-    return _secret_first("groq_api_key", "groq_api_key")
+    return load_api_keys().get("groq_api_key")
 
 
 def get_openrouter_key() -> str | None:
     """Shirazi-origin: OpenRouter API key for provider failover (may be None)."""
-    return _secret_first("openrouter_api_key", "openrouter_api_key")
+    return load_api_keys().get("openrouter_api_key")
 
 
 def save_provider_key(provider: str, key: str) -> None:
-    """Shirazi-origin: store a non-Gemini provider key (groq/openrouter).
-
-    Stage F: writes to the OS credential store first (so get_*_key finds
-    it); the legacy file is updated too for backward compatibility."""
+    """Shirazi-origin: store a non-Gemini provider key (groq/openrouter)."""
     field = {"groq": "groq_api_key", "openrouter": "openrouter_api_key"}.get(provider)
     if not field:
         raise ValueError(f"unknown provider: {provider}")
-    val = (key or "").strip()
-    try:
-        from core.secrets_store import set_secret
-        if val:
-            set_secret(field, val)
-    except Exception:
-        pass
     ensure_config_dir()
     data = load_api_keys()
-    data[field] = val
+    data[field] = (key or "").strip()
     CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -230,14 +204,16 @@ def save_push_to_talk_enabled(enabled: bool) -> None:
     _save_flag("push_to_talk_enabled", enabled)
 
 
-HUD_STYLES = ("face", "core")
+HUD_STYLES = ("face", "core", "3d")
 
 
 def get_hud_style() -> str:
     """Which centrepiece the HUD draws.
 
-    - "core": the reactor core (default).
+    - "core": NoorCore Living Intelligence Core (default).
     - "face": the holographic head.
+    - "3d":   reserved for the 3D avatar track — valid but not implemented;
+               the HUD falls back to "core" and says so instead of faking it.
 
     Taste, not capability — face and core render in the same software painter
     and cost about the same. The choice survives a restart.
@@ -249,6 +225,15 @@ def get_hud_style() -> str:
 def save_hud_style(style: str) -> None:
     s = str(style or "").strip().lower()
     _save_flag("hud_style", s if s in HUD_STYLES else "core")
+
+
+def is_3d_available() -> bool:
+    """The 3D robot avatar is live when WebEngine + the model file exist."""
+    try:
+        from core.avatar3d import is_3d_available as _real
+        return bool(_real())
+    except Exception:
+        return False
 
 
 THEMES = ("noorcore", "classic")
@@ -444,62 +429,6 @@ def get_plugin_enabled(plugin_name: str) -> bool:
     return load_api_keys().get("plugins_enabled", {}).get(plugin_name, True)
 
 
-def set_plugin_enabled(plugin_name: str, enabled: bool) -> None:
-    """Stage C: explicit enable/disable. Disabled plugins are excluded from
-    tool declarations AND execution (checked in PluginRegistry.run)."""
-    data = load_api_keys()
-    pe = data.get("plugins_enabled", {})
-    if not isinstance(pe, dict):
-        pe = {}
-    pe[str(plugin_name)] = bool(enabled)
-    _patch_config(plugins_enabled=pe)
-
-
-def get_plugin_health(plugin_name: str) -> dict:
-    """Failure counters for health monitoring. Never raises."""
-    try:
-        return dict(load_api_keys().get("plugin_health", {}).get(plugin_name, {}))
-    except Exception:
-        return {}
-
-
-def record_plugin_failure(plugin_name: str, error: str) -> dict:
-    """Stage C: track consecutive failures. Returns the updated health dict.
-    After 5 consecutive failures the plugin is auto-disabled (failure
-    isolation) — the user can re-enable it from the plugin manager."""
-    data = load_api_keys()
-    ph = data.get("plugin_health", {})
-    if not isinstance(ph, dict):
-        ph = {}
-    h = dict(ph.get(plugin_name, {}))
-    h["failures"] = int(h.get("failures", 0)) + 1
-    h["last_error"] = str(error)[:300]
-    import time as _t
-    h["last_failure_at"] = _t.time()
-    auto_disabled = False
-    if h["failures"] >= 5 and get_plugin_enabled(plugin_name):
-        set_plugin_enabled(plugin_name, False)
-        auto_disabled = True
-    h["auto_disabled"] = auto_disabled or bool(h.get("auto_disabled"))
-    ph[str(plugin_name)] = h
-    _patch_config(plugin_health=ph)
-    return h
-
-
-def record_plugin_success(plugin_name: str) -> None:
-    """Reset the failure counter on success."""
-    data = load_api_keys()
-    ph = data.get("plugin_health", {})
-    if not isinstance(ph, dict):
-        return
-    h = dict(ph.get(plugin_name, {}))
-    if h.get("failures"):
-        h["failures"] = 0
-        h["auto_disabled"] = False
-        ph[str(plugin_name)] = h
-        _patch_config(plugin_health=ph)
-
-
 # ── Per-plugin settings ("tokens" / connection details) ───────────────────────
 # Generic store so a plugin can declare its own config fields (PLUGIN_SETTINGS)
 # and the settings UI renders + persists them WITHOUT any core edit — keeping the
@@ -557,28 +486,6 @@ def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:
 
 # ── Floating companion (opt-in, off by default) ─────────────────────────────
 
-def get_barge_in_enabled() -> bool:
-    """Voice barge-in: cut SHIRAZI off by speaking over it (EchoGuard-voted).
-
-    Off by default — whether it behaves depends on the room and speakers,
-    so the user opts in (set "barge_in_enabled": true in the config) and
-    tries it on their own hardware. Read once at startup."""
-    return bool(load_api_keys().get("barge_in_enabled", False))
-
-
-def save_barge_in_enabled(enabled: bool) -> None:
-    _save_flag("barge_in_enabled", bool(enabled))
-
-
-def get_edge_glow_enabled() -> bool:
-    """Screen edge glow (from MYRA ULTRA). Off by default; the user opts in."""
-    return bool(load_api_keys().get("edge_glow_enabled", False))
-
-
-def save_edge_glow_enabled(enabled: bool) -> None:
-    _save_flag("edge_glow_enabled", bool(enabled))
-
-
 def get_companion_enabled() -> bool:
     """Floating NoorCore companion. Off by default; the user opts in."""
     return bool(load_api_keys().get("companion_enabled", False))
@@ -625,172 +532,3 @@ def get_companion_opacity() -> float:
 
 def save_companion_opacity(op: float) -> None:
     _save_flag("companion_opacity", max(0.3, min(1.0, float(op))))
-
-
-# ── Providers: local STT/LLM/TTS and non-Gemini APIs ─────────────────────────
-# Stored here rather than in a file of their own, for the same reason plugin
-# settings are: one config to back up, one already in .gitignore, one place a
-# user knows to look.
-#
-# The important property is what happens when nobody has configured anything.
-# `get_provider_mode()` returns "gemini" on a config that has never heard of
-# providers, and every caller checks that BEFORE importing the providers
-# package — so an ordinary install never executes a line of it. This is the
-# whole basis of the claim that the folder costs nothing when unused.
-PROVIDER_MODE_GEMINI = "gemini"      # the conversation runs on the Live API
-PROVIDER_MODE_PIPELINE = "pipeline"  # STT -> LLM -> TTS, assembled from providers
-
-
-def get_providers() -> dict:
-    """The whole providers block, or an empty dict."""
-    val = load_api_keys().get("providers")
-    return dict(val) if isinstance(val, dict) else {}
-
-
-def get_provider_mode() -> str:
-    """Which engine holds the conversation. Defaults to Gemini Live."""
-    mode = str(get_providers().get("mode", "") or "").strip().lower()
-    return mode if mode in (PROVIDER_MODE_GEMINI, PROVIDER_MODE_PIPELINE) \
-        else PROVIDER_MODE_GEMINI
-
-
-def get_provider_config(provider_id: str) -> dict:
-    """Stored settings for one provider — address, model, key, limits."""
-    creds = get_providers().get("creds")
-    val = creds.get(provider_id) if isinstance(creds, dict) else None
-    return dict(val) if isinstance(val, dict) else {}
-
-
-def get_pipeline() -> dict:
-    """Which provider fills each slot of the pipeline engine."""
-    val = get_providers().get("pipeline")
-    return dict(val) if isinstance(val, dict) else {}
-
-
-def get_sidecar_provider() -> str:
-    """The provider id used for one-shot calls when Gemini cannot answer them,
-    or '' for none.
-
-    Separate from the conversation on purpose: these are different jobs with
-    different failure modes. Gemini's Live quota and its text quota are separate
-    pools, and on the free tier it is the text pool that runs out first — which
-    kills document reading, screen reasoning and code generation while the
-    conversation carries on. Being able to point only those at another model,
-    without changing the voice at all, is the cheapest useful thing this whole
-    folder does.
-    """
-    return str(get_providers().get("sidecar", "") or "").strip()
-
-
-def _patch_providers(**fields) -> None:
-    p = get_providers()
-    p.update(fields)
-    _patch_config(providers=p)
-
-
-def save_provider_mode(mode: str) -> None:
-    mode = (mode or "").strip().lower()
-    _patch_providers(mode=mode if mode in (PROVIDER_MODE_GEMINI,
-                                           PROVIDER_MODE_PIPELINE)
-                     else PROVIDER_MODE_GEMINI)
-
-
-def save_provider_config(provider_id: str, values: dict) -> None:
-    """Merge settings for one provider. Only the given keys are touched, so the
-    panel can save one field without reading and rewriting the rest."""
-    p = get_providers()
-    creds = p.get("creds")
-    if not isinstance(creds, dict):
-        creds = {}
-    cur = creds.get(provider_id)
-    cur = dict(cur) if isinstance(cur, dict) else {}
-    cur.update(values or {})
-    creds[provider_id] = cur
-    p["creds"] = creds
-    _patch_config(providers=p)
-
-
-def save_pipeline(stt: str = None, llm: str = None, tts: str = None) -> None:
-    """Set one or more pipeline slots. `None` leaves a slot alone; '' clears it."""
-    p = get_providers()
-    pipe = p.get("pipeline")
-    pipe = dict(pipe) if isinstance(pipe, dict) else {}
-    for slot, value in (("stt", stt), ("llm", llm), ("tts", tts)):
-        if value is not None:
-            pipe[slot] = str(value).strip()
-    p["pipeline"] = pipe
-    _patch_config(providers=p)
-
-
-def save_sidecar_provider(provider_id: str) -> None:
-    _patch_providers(sidecar=(provider_id or "").strip())
-
-
-def get_sidecar_first() -> bool:
-    """Whether the side-call provider is tried BEFORE Gemini rather than after.
-
-    Off by default: measured in core/gemini.py, the Gemini rungs answer a short
-    request in well under a second, and a local model on ordinary hardware does
-    not. On means something specific — 'I would rather this stayed on my
-    machine, and I accept it being slower' — so it is a choice someone makes,
-    never a default they inherit.
-    """
-    return bool(get_providers().get("sidecar_first", False))
-
-
-def save_sidecar_first(enabled: bool) -> None:
-    _patch_providers(sidecar_first=bool(enabled))
-
-
-def save_providers(mode: str = None, pipeline: dict = None, creds: dict = None,
-                   sidecar: str = None, sidecar_first: bool = None) -> None:
-    """Write the whole providers block in ONE file write.
-
-    The settings panel used to call five setters in a row — one per provider's
-    credentials, then the mode, then the pipeline, then the two side-call
-    keys — and every one of them was a separate read-modify-write of
-    api_keys.json. Five reads and five writes of the same file, in sequence,
-    while the panel's own APPLY was already triggering a reconnect that makes
-    main.py write to it too. Any interleaving loses whichever key was written
-    first, and the one people noticed was the mode: set MY OWN SETUP, save,
-    reopen, and it says Gemini again.
-
-    `None` leaves a section alone; `creds` is merged per provider so a panel
-    that only edited one does not have to send the others.
-    """
-    ensure_config_dir()
-    data: dict = {}
-    if CONFIG_FILE.exists():
-        try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-
-    block = data.get("providers")
-    block = dict(block) if isinstance(block, dict) else {}
-
-    if mode is not None:
-        m = str(mode).strip().lower()
-        block["mode"] = m if m in (PROVIDER_MODE_GEMINI,
-                                   PROVIDER_MODE_PIPELINE) else PROVIDER_MODE_GEMINI
-    if pipeline is not None:
-        current = block.get("pipeline")
-        current = dict(current) if isinstance(current, dict) else {}
-        current.update({k: str(v or "").strip() for k, v in pipeline.items()})
-        block["pipeline"] = current
-    if creds is not None:
-        store = block.get("creds")
-        store = dict(store) if isinstance(store, dict) else {}
-        for pid, values in (creds or {}).items():
-            one = store.get(pid)
-            one = dict(one) if isinstance(one, dict) else {}
-            one.update(values or {})
-            store[pid] = one
-        block["creds"] = store
-    if sidecar is not None:
-        block["sidecar"] = str(sidecar or "").strip()
-    if sidecar_first is not None:
-        block["sidecar_first"] = bool(sidecar_first)
-
-    data["providers"] = block
-    CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")

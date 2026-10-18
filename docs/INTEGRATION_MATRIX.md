@@ -1,4 +1,4 @@
-# SHIRAZI LVI — Feature Integration Matrix
+# SHIRAZI LV — Feature Integration Matrix
 
 What was taken from each codebase, what was merged, and what was deliberately
 left out (with reasons). "Shirazi" = TalhaGoharWeb/shirazi-personal-assistant

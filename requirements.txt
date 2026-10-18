@@ -3,8 +3,8 @@
 # one file serves Windows, macOS and Linux. `python setup.py` runs it for you.
 #
 # Two flavours exist:
-#   requirements.txt       — FULL install, includes PyQt6-WebEngine (kept for
-#                            optional web views). This is the default.
+#   requirements.txt       — FULL install, includes PyQt6-WebEngine (3D Iron
+#                            Man avatar). This is the default.
 #   requirements-base.txt  — BASE install, identical EXCEPT PyQt6-WebEngine is
 #                            left out (lighter, faster install). The app runs
 #                            fully without it: the "3d" HUD style is reported
@@ -21,8 +21,8 @@
 # software with QPainter and posed with numpy, so the face costs no extra
 # package, no OpenGL and no GPU. Nothing below was added for it.
 PyQt6>=6.6,<7
-# Optional web views (WebEngine). Nothing in the current HUD requires it:
-# the app runs fully without it — see the --base install.
+# 3D robot avatar (Three.js scene in a WebEngine view). Optional: without it
+# the "3d" HUD style is reported unavailable and the HUD falls back to Core.
 PyQt6-WebEngine>=6.6,<7
 sounddevice>=0.4,<1
 numpy>=1.24,<3

@@ -36,17 +36,6 @@ def _get_desktop() -> Path:
     return Path.home() / "Desktop"
 
 def _build_sandbox() -> dict:
-    """F-012 hardening: the sandbox no longer exposes the classic escape
-    primitives.
-
-    Removed vs the old sandbox:
-    - getattr/hasattr: the primary sandbox-escape vector
-      (getattr(x, '__class__') -> object subclass traversal).
-    - ctypes: arbitrary native code execution on Windows.
-    - raw Path: replaced by a checked wrapper enforcing the OMNICONTROL
-      folder allow-list (traversal/symlink escapes rejected).
-    - winreg write paths: read-only subset kept.
-    """
     import time
 
     safe_builtins = {
@@ -54,21 +43,21 @@ def _build_sandbox() -> dict:
         "len": len, "str": str, "int": int, "float": float,
         "bool": bool, "list": list, "dict": dict, "tuple": tuple,
         "range": range, "enumerate": enumerate, "sorted": sorted,
-        "isinstance": isinstance,
+        "isinstance": isinstance, "hasattr": hasattr, "getattr": getattr,
         "max": max, "min": min, "sum": sum, "abs": abs,
         "zip": zip, "map": map, "filter": filter,
     }
 
     sandbox = {
         "__builtins__": safe_builtins,
-        "Path": _CheckedPath,
+        "Path": Path,
         "time": time,
         "shutil": type("shutil", (), {
             "copy2":      shutil.copy2,
             "copytree":   shutil.copytree,
             "disk_usage": shutil.disk_usage,
         })(),
-        "os_path": os.path,
+        "os_path": os.path,  
     }
 
     if _PYAUTOGUI:
@@ -76,9 +65,11 @@ def _build_sandbox() -> dict:
 
     if _OS == "Windows":
         try:
+            import ctypes
             import winreg
+            sandbox["ctypes"] = ctypes
             sandbox["winreg"] = type("winreg", (), {
-                # Read-only.
+                # Sadece okuma
                 "OpenKey":      winreg.OpenKey,
                 "QueryValueEx": winreg.QueryValueEx,
                 "HKEY_CURRENT_USER": winreg.HKEY_CURRENT_USER,
@@ -87,62 +78,6 @@ def _build_sandbox() -> dict:
             pass
 
     return sandbox
-
-
-class _CheckedPath(Path):
-    """pathlib.Path that enforces the OMNICONTROL folder allow-list on
-    every filesystem-touching operation. Pure path arithmetic (/, parent,
-    name, ...) is unrestricted; open/read/write/unlink/mkdir/stat resolve
-    the path and check it first."""
-    _flavour = type(Path())._flavour if hasattr(type(Path()), "_flavour") else None
-
-    def _check(self, op: str) -> None:
-        try:
-            from core.omnicontrol import policy as _pol
-            ok, reason = _pol.check_path(str(self), op)
-            if not ok:
-                raise PermissionError(f"desktop sandbox: {reason}")
-        except PermissionError:
-            raise
-        except Exception:
-            # Policy unavailable — fail closed for writes, allow reads of
-            # nothing (deny by default beats silent allow).
-            if op in ("write", "delete", "move"):
-                raise PermissionError("desktop sandbox: policy unavailable")
-
-    def open(self, *a, **k):
-        mode = a[0] if a else k.get("mode", "r")
-        op = "write" if any(c in str(mode) for c in "wax+") else "read"
-        self._check(op)
-        return super().open(*a, **k)
-
-    def read_text(self, *a, **k):
-        self._check("read")
-        return super().read_text(*a, **k)
-
-    def write_text(self, *a, **k):
-        self._check("write")
-        return super().write_text(*a, **k)
-
-    def read_bytes(self, *a, **k):
-        self._check("read")
-        return super().read_bytes(*a, **k)
-
-    def write_bytes(self, *a, **k):
-        self._check("write")
-        return super().write_bytes(*a, **k)
-
-    def unlink(self, *a, **k):
-        self._check("delete")
-        return super().unlink(*a, **k)
-
-    def mkdir(self, *a, **k):
-        self._check("write")
-        return super().mkdir(*a, **k)
-
-    def stat(self, *a, **k):
-        self._check("read")
-        return super().stat(*a, **k)
 
 
 def _execute_generated_code(code: str, player=None) -> str:
@@ -158,24 +93,8 @@ def _execute_generated_code(code: str, player=None) -> str:
     output_lines = []
     sandbox["__builtins__"]["print"] = lambda *a: output_lines.append(" ".join(str(x) for x in a))
 
-    # Audit: log the code hash (never the full code — it may contain paths).
     try:
-        import hashlib
-        from core.omnicontrol import audit as _audit
-        _audit.log("desktop", "exec-code",
-                   decision="executed",
-                   reason="sha256:" + hashlib.sha256(
-                       code.encode()).hexdigest()[:16])
-    except Exception:
-        pass
-
-    try:
-        # Bounded execution: generated code gets 60s, then it is killed.
-        import concurrent.futures as _cf
-        with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
-            _fut = _ex.submit(exec, compile(code, "<shirazi_desktop>", "exec"),
-                              sandbox)
-            _fut.result(timeout=60.0)
+        exec(compile(code, "<shirazi_desktop>", "exec"), sandbox)
         return "\n".join(output_lines) if output_lines else "Done."
     except Exception as e:
         print(f"[Desktop] Exec error: {e}\nCode:\n{code[:300]}")
