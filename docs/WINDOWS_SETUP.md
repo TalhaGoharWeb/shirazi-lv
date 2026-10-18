@@ -23,12 +23,6 @@ python setup.py
 This installs all Python dependencies and the Playwright browsers used for
 web automation. It takes several minutes.
 
-> **Lighter alternative:** `python setup.py --base` installs
-> `requirements-base.txt` — identical except it leaves out PyQt6-WebEngine
-> (the 3D Iron Man avatar). The app runs fully without it: the HUD's "3d"
-> style is reported unavailable and falls back to the NoorCore/Core visuals.
-> To add the 3D avatar later, run
-> `pip install "PyQt6-WebEngine>=6.6,<7"`.
 
 3. Start SHIRAZI:
 

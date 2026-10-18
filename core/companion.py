@@ -16,7 +16,7 @@ the main window is minimized.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QWidget, QMenu
 
@@ -36,11 +36,15 @@ class CompanionWindow(QWidget):
     voice_toggled = pyqtSignal(bool)
     hide_requested = pyqtSignal()
 
-    def __init__(self, state_provider=None, amp_provider=None, theme_provider=None):
+    def __init__(self, state_provider=None, amp_provider=None, theme_provider=None,
+                 pending_provider=None):
         super().__init__(None)
         self._state_provider = state_provider or (lambda: "IDLE")
         self._amp_provider = amp_provider or (lambda: 0.0)
         self._theme_provider = theme_provider or (lambda: "noorcore")
+        # pending_provider -> int count of approvals waiting. When > 0 the
+        # companion paints an amber badge so a minimized user still notices.
+        self._pending_provider = pending_provider or (lambda: 0)
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -168,7 +172,30 @@ class CompanionWindow(QWidget):
             theme = {}
         cx, cy = self.width() / 2.0, self.height() / 2.0
         self._core.paint(p, cx, cy, min(cx, cy) * 0.78, theme)
+        # Approval badge: amber dot with count when approvals are waiting.
+        try:
+            n = int(self._pending_provider() or 0)
+        except Exception:
+            n = 0
+        if n > 0:
+            from PyQt6.QtGui import QColor, QBrush, QFont
+            from PyQt6.QtCore import Qt
+            bx, by, br = self.width() - 18, 18, 11
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(QColor(theme.get("amber", "#F2B84B"))))
+            p.drawEllipse(QPointF(bx, by), br, br)
+            p.setPen(QColor("#080D14"))
+            p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            p.drawText(QRectF(bx - br, by - br, br * 2, br * 2),
+                       Qt.AlignmentFlag.AlignCenter, str(min(n, 99)))
         p.end()
+
+    def pending_count(self) -> int:
+        """Approvals currently waiting (0 when the provider fails)."""
+        try:
+            return max(0, int(self._pending_provider() or 0))
+        except Exception:
+            return 0
 
     def set_size(self, px: int) -> None:
         px = max(72, min(240, int(px)))

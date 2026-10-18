@@ -6,7 +6,7 @@ NoorCore MVP acceptance tests (Phase 2 criteria).
   3. Audio ring responds to the amp fed in (and is flat when silent —
      the core never fakes audio).
   4. Approval card uses REAL gateway events (pending -> card -> resolve).
-  5. Style toggle: face/core/3d — 3d reports unavailable, never fakes.
+  5. Style toggle: face/core only.
   6. Both themes render all states.
   7. Existing suite still green (regression).
 
@@ -139,12 +139,9 @@ class Themes(unittest.TestCase):
 class StyleToggle(unittest.TestCase):
     def test_hud_styles(self):
         from memory import config_manager as cm
-        from core.avatar3d import is_3d_available as real
         self.assertIn("core", cm.HUD_STYLES)
         self.assertIn("face", cm.HUD_STYLES)
-        self.assertIn("3d", cm.HUD_STYLES)
-        # 3d availability is honest: True only when WebEngine + model exist
-        self.assertEqual(cm.is_3d_available(), real())
+        self.assertNotIn("3d", cm.HUD_STYLES)
 
     def test_default_is_core(self):
         from memory import config_manager as cm

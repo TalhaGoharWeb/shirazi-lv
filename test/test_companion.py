@@ -127,7 +127,7 @@ class HudCanvasInitRegression(unittest.TestCase):
                and n.value.id == "self":
                 assigned.add(n.attr)
         for attr in ("_grid_cache", "_grid_key", "hud_style", "_live_amp",
-                     "_amp_disp", "_tick", "_tmr", "_noor", "_avatar3d",
-                     "_avatar3d_ok", "muted", "speaking", "state"):
+                     "_amp_disp", "_tick", "_tmr", "_noor",
+                     "muted", "speaking", "state"):
             self.assertIn(attr, assigned,
                           f"HudCanvas.__init__ must assign self.{attr}")

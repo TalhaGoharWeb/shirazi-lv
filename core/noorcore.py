@@ -8,13 +8,20 @@ and a 2013 laptop.
 Explicit state model — every visual is driven by a REAL event, never invented:
   IDLE              slow breathing, low intensity, no fake activity
   LISTENING         audio ring follows the real mic amplitude
-  THINKING          faster orbitals while a model request is in flight
+  THINKING          faster orbitals while a model request is in flight;
+                    set_thinking_depth(1/2) for visibly deeper work
   SPEAKING          audio ring follows real TTS playback amplitude
   EXECUTING         segmented ring; real progress when measurable, honest
                     indeterminate sweep otherwise (never fabricated %)
-  AWAITING_APPROVAL steady amber ring + approval card (UI layer)
+  AWAITING_APPROVAL steady amber ring + approval card (UI layer); urgency
+                    rises gently the longer the request waits (real elapsed)
   ERROR             restrained red pulse; the message lives in the UI
   OFFLINE           dim, almost still; never implies work is happening
+  DEGRADED          text-only fallback (Live voice down): desaturated, slow
+                    dashed ring — honest about reduced capability
+
+Every state change fires a brief transition pulse (an expanding ring that
+fades in ~0.6s) so the eye catches the change without a jarring cut.
 
 Interface mirrors HoloAvatar for drop-in use in HudCanvas:
     core = NoorCore()
@@ -46,6 +53,7 @@ class NoorCore:
         "AWAITING_APPROVAL": (0.25, 0.6, True),
         "ERROR":             (0.30, 0.8, False),
         "OFFLINE":           (0.05, 0.3, False),
+        "DEGRADED":          (0.20, 0.5, True),
     }
 
     def __init__(self, reduced_motion: bool = False, seed: int = 7):
@@ -59,6 +67,9 @@ class NoorCore:
         self._amp = 0.0          # smoothed audio level 0..1
         self._amp_tgt = 0.0
         self._progress: float | None = None  # EXECUTING real progress
+        self._pulse_t = -10.0    # transition pulse: seconds since state change
+        self._approval_since: float | None = None  # AWAITING_APPROVAL start (perf_counter)
+        self._think_depth = 0    # 0 normal, 1 deep, 2 very deep
         self._reduced = reduced_motion
         rng = random.Random(seed)
         # particle field: (angle, radius_frac, speed, size)
@@ -84,6 +95,12 @@ class NoorCore:
         self.state = s
         e, o, b = self._PARAMS[s]
         self._tgt_energy, self._tgt_orb_speed, self._breathing = e, o, b
+        self._pulse_t = 0.0  # transition pulse starts now
+        if s == "AWAITING_APPROVAL":
+            import time as _t
+            self._approval_since = _t.perf_counter()
+        else:
+            self._approval_since = None
         if s != "EXECUTING":
             self._progress = None
 
@@ -99,6 +116,18 @@ class NoorCore:
         if on:
             self._particles = []
 
+    def set_thinking_depth(self, depth: int) -> None:
+        """0 = normal, 1 = deep, 2 = very deep. Only affects THINKING visuals;
+        the orbital speed multiplier makes multi-stage model work visible."""
+        self._think_depth = max(0, min(2, int(depth)))
+
+    def approval_wait_s(self) -> float:
+        """Seconds the current approval request has been waiting (0 if none)."""
+        if self._approval_since is None:
+            return 0.0
+        import time as _t
+        return max(0.0, _t.perf_counter() - self._approval_since)
+
     # ── per-frame ─────────────────────────────────────────────────────────
     def step(self, dt: float, amp: float = 0.0) -> None:
         # time-constant smoothing (frame-rate independent, like the avatar)
@@ -109,6 +138,7 @@ class NoorCore:
         self._energy += (self._tgt_energy - self._energy) * ke
         self._orb_speed += (self._tgt_orb_speed - self._orb_speed) * ke
         self._t += dt * (0.35 + self._energy)
+        self._pulse_t += dt
 
     # ── paint ─────────────────────────────────────────────────────────────
     def paint(self, p: QPainter, cx: float, cy: float, r: float,
@@ -150,6 +180,10 @@ class NoorCore:
                 p.drawEllipse(QPointF(px, py), sz, sz)
 
         # 3. orbital paths — fine ellipses with moving elements
+        # Thinking depth multiplies orbital speed: deeper work is visible.
+        think_mult = 1.0
+        if self.state == "THINKING":
+            think_mult = (1.0, 1.8, 2.8)[self._think_depth]
         p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         for tilt, phase, spd, dots in self._orbits:
             op = QPen(QColor(cyan))
@@ -166,7 +200,8 @@ class NoorCore:
             p.drawEllipse(QRectF(-w / 2, -h / 2, w, h))
             # moving elements on the path
             for d in range(dots):
-                ta = phase + self._t * spd * self._orb_speed * _TAU * 0.14 + d * _TAU / dots
+                ta = (phase + self._t * spd * self._orb_speed * think_mult
+                      * _TAU * 0.14 + d * _TAU / dots)
                 dx, dy = math.cos(ta) * w / 2, math.sin(ta) * h / 2
                 dc = QColor(accent)
                 dc.setAlphaF(0.55 + 0.30 * self._energy)
@@ -211,6 +246,21 @@ class NoorCore:
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(QPointF(cx, cy), nuc_r, nuc_r)
 
+        # 6b. transition pulse — an expanding ring that fades in ~0.6s after
+        # every state change, so the eye catches the transition. Skipped under
+        # reduced motion.
+        if not self._reduced and 0.0 <= self._pulse_t < 0.6:
+            pf = self._pulse_t / 0.6  # 0 → 1
+            pr = r * (1.38 + 0.55 * pf)
+            pp = QPen(QColor(accent))
+            pp.setWidthF(max(1.0, r * 0.010 * (1 - pf)))
+            pc = QColor(accent)
+            pc.setAlphaF(0.55 * (1 - pf))
+            pp.setColor(pc)
+            p.setPen(pp)
+            p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            p.drawEllipse(QPointF(cx, cy), pr, pr)
+
         # 7. state ring — outer indicator; EXECUTING shows real or honest sweep
         rp = QPen(QColor(accent))
         rp.setWidthF(max(2.0, r * 0.014))
@@ -220,13 +270,28 @@ class NoorCore:
         elif self.state == "OFFLINE":
             rc.setAlphaF(0.25)
         elif self.state == "AWAITING_APPROVAL":
-            rc.setAlphaF(0.85)  # stable amber, no blink — calm authority
+            # Calm authority that quickens gently: the pulse period shrinks
+            # from ~3s to ~1.2s over the first minute of waiting. Never a
+            # frantic blink — the request is waiting, not the user.
+            wait = self.approval_wait_s()
+            urgency = min(1.0, wait / 60.0)
+            period = 3.0 - 1.8 * urgency
+            pulse = 0.5 + 0.5 * math.sin(self._t * _TAU / max(0.8, period))
+            rc.setAlphaF(0.70 + 0.25 * pulse)
         else:
             rc.setAlphaF(0.50 + 0.25 * self._energy)
         rp.setColor(rc)
         p.setPen(rp)
         rr = r * 1.38
-        if self.state == "EXECUTING":
+        if self.state == "DEGRADED":
+            # Honest reduced capability: slow dashed ring, desaturated.
+            # Text-only mode — the core never pretends voice is working.
+            rp.setStyle(Qt.PenStyle.DashLine)
+            dash_phase = (self._t * 12) % 40
+            rp.setDashOffset(dash_phase)
+            p.setPen(rp)
+            p.drawEllipse(QPointF(cx, cy), rr, rr)
+        elif self.state == "EXECUTING":
             if self._progress is None:
                 # honest indeterminate: a sweeping arc, never a fake %
                 start = int(math.degrees(self._t * 2.2) % 360)

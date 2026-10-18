@@ -299,8 +299,20 @@ def _render_prompt(template: str, values: dict) -> str:
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    """Gemini key: OS credential store first, api_keys.json fallback.
+
+    Returns '' when no key exists (caller shows the setup overlay).
+    Never raises — a missing key must not traceback-loop the Live thread."""
+    try:
+        from memory.config_manager import get_gemini_key
+        return get_gemini_key() or ""
+    except Exception:
+        pass
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("gemini_api_key") or ""
+    except Exception:
+        return ""
 
 
 def _load_system_prompt() -> str:
@@ -908,6 +920,11 @@ class ShiraziLive:
             pass
         print("[SHIRAZI] 🛑 Graceful shutdown complete")
         try:
+            from core import health as _hl
+            _hl.mark_clean_shutdown()
+        except Exception:
+            pass
+        try:
             self.ui._app.quit()
         except Exception:
             pass
@@ -926,6 +943,21 @@ class ShiraziLive:
             self.ui.write_log("SYS: Voice link is down — answering from text fallback.")
             self._degraded_text_reply(text)
             return
+        # Personal Companion: one-turn overrides ('in English just this
+        # once') are detected here and scoped to this turn only -- the
+        # saved profile is never rewritten by a temporary request.
+        try:
+            from core import instructions as _ins2
+            _ov = _ins2.detect_temp_override(text)
+            _ov_lang = (_ov or {}).get("written_language")
+            if _ov_lang:
+                _ov_name = {"english": "English", "urdu": "Urdu",
+                            "roman_urdu": "Roman Urdu", "arabic": "Arabic"}.get(_ov_lang, "English")
+                text = ("[One-turn instruction: answer THIS response in "
+                        + _ov_name + ". Do not change any saved language "
+                        + "preference.]\n" + text)
+        except Exception:
+            pass
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns={"role": "user", "parts": [{"text": text}]},
@@ -1065,14 +1097,16 @@ class ShiraziLive:
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
-        # Load customization from config
+        # Personal Companion: identity comes from the versioned user
+        # profile (~/.shirazi/profile.json). Legacy assistant_name /
+        # user_name fields migrate into the profile on first load.
         try:
-            _cfg = json.loads(open(API_CONFIG_PATH, encoding="utf-8").read())
-            self._asst_name = (_cfg.get("assistant_name") or "SHIRAZI").strip()
-            _user_name = (_cfg.get("user_name") or "").strip()
+            from core import profile as _prof
+            _profile_data = _prof.load_profile()
+            self._asst_name = (_profile_data.get("assistant_name") or "SHIRAZI").strip()
         except Exception:
             self._asst_name = "SHIRAZI"
-            _user_name = ""
+            _profile_data = {}
 
         memory     = load_memory()
         mem_str    = format_memory_for_prompt(memory)
@@ -1096,24 +1130,17 @@ class ShiraziLive:
             f"Use this to calculate exact times for reminders.\n\n"
         )
 
-        # Identity injection — overrides any hardcoded name in prompt.txt
-        # Address form is a property of the language being spoken, so it is
-        # stated as a principle rather than a two-language lookup — the model
-        # already knows the respectful register of whatever language it is in.
-        _addr = (f"ADDRESS: Always call the user '{_user_name}'."
-                 if _user_name
-                 else 'ADDRESS: Address the user with the ordinary respectful form '
-                      'for a superior in the language you are currently speaking — '
-                      '"sir" in English, its everyday equivalent in any other '
-                      'language. Never an archaic or aristocratic form, and never '
-                      'the form from a different language than the one you are '
-                      'speaking in this sentence.')
-        identity_ctx = (
-            f"[IDENTITY]\n"
-            f"Your name is {self._asst_name}. "
-            f"Always refer to yourself as {self._asst_name}.\n"
-            f"{_addr}\n\n"
-        )
+        # Personal Companion: the profile block carries identity, address
+        # form (never the actual_name), languages, style, length, rules
+        # and boundaries. Rebuilt on every connect, so provider failover
+        # and new conversations always re-apply the saved preferences.
+        try:
+            from core import instructions as _ins
+            identity_ctx = _ins.build_profile_block(_profile_data) + "\n\n"
+        except Exception:
+            identity_ctx = (
+                f"[IDENTITY]\nYour name is {self._asst_name}.\n\n")
+
 
         # Everything the model is told about *itself* is derived here, not
         # written into prompt.txt: the name comes from config, the platform from
@@ -2267,8 +2294,31 @@ class ShiraziLive:
             print(f"[Dashboard] Disabled: {e}")
             self._dashboard = None
 
+        # One-time secret-store diagnostic: backend + presence only,
+        # never values. If the user's key 'does not work', the next
+        # pasted log shows exactly where the lookup stands.
+        try:
+            from core import secrets_store as _ssm
+            from memory.config_manager import (get_gemini_key as _ggk,
+                get_groq_key as _grk, get_openrouter_key as _gok)
+            print(f"[Secrets] backend={_ssm.backend_name()} "
+                  f"gemini={'present' if _ggk() else 'MISSING'} "
+                  f"groq={'present' if _grk() else 'missing'} "
+                  f"openrouter={'present' if _gok() else 'missing'}")
+        except Exception as _e:
+            print(f"[Secrets] diagnostic unavailable: {_e}")
+
         while True:
             try:
+                _api_key = _get_api_key()
+                if not _api_key:
+                    print("[SHIRAZI] No Gemini API key — Live voice is off.")
+                    self.ui.write_log(
+                        "SYS: No Gemini API key found. Open Settings \u2192 "
+                        "API KEYS and paste your key, then I will connect.")
+                    self.ui.set_state("OFFLINE")
+                    await asyncio.sleep(20)
+                    continue
                 print("[SHIRAZI] Connecting...")
                 self.ui.set_state("THINKING")
                 # Pick the rung to open the conversation on. A model resting
@@ -2286,7 +2336,7 @@ class ShiraziLive:
                 # v1alpha carries proactive audio; if it gets rejected we fall
                 # back to v1beta.
                 client = genai.Client(
-                    api_key=_get_api_key(),
+                    api_key=_api_key,
                     http_options={"api_version": "v1alpha" if self._enhanced_live else "v1beta"}
                 )
 
@@ -2325,6 +2375,23 @@ class ShiraziLive:
                         self._awake = True
                         self.ui.set_state("LISTENING")
                         self.ui.write_log("SYS: SHIRAZI online.")
+                    # Personal Companion: first-run onboarding after the
+                    # provider connection succeeds (once per session).
+                    try:
+                        self.ui.maybe_show_onboarding()
+                    except Exception:
+                        pass
+                    # Stage F: offer one-click migration of legacy plaintext
+                    # keys into the OS credential store.
+                    try:
+                        from core import secrets_store as _ss
+                        if _ss.needs_migration():
+                            self.ui.write_log(
+                                "SYS: API keys found in plaintext config. "
+                                "Say 'migrate my keys' or tap Settings > API KEYS "
+                                "> MIGRATE TO SECURE STORE.")
+                    except Exception:
+                        pass
                     # Phase 3.1: voice is back — clear degraded mode.
                     try:
                         from core.degraded_chat import degraded_chat
@@ -2511,6 +2578,21 @@ class ShiraziLive:
             await asyncio.sleep(delay)
 
 def main():
+    # Personal Companion (Phase 8): startup health checks + crash
+    # detection. Non-fatal problems never block the UI from opening.
+    try:
+        from core import health as _hl
+        if not _hl.was_clean_shutdown():
+            print("[Health] ⚠ previous run did not shut down cleanly.")
+            _tasks = _hl.check_incomplete_tasks()
+            if _tasks:
+                print(f"[Health] {_tasks and len(_tasks)} incomplete task(s): "
+                      + ", ".join(t['title'] for t in _tasks[:5]))
+        print(_hl.health_report_text())
+        _hl.mark_running()
+    except Exception as _e:
+        print(f"[Health] checks unavailable: {_e}")
+
     # Pre-import heavy/lazy modules on the MAIN thread before any background
     # thread starts. The wake-word warmup thread and the UI thread both touch
     # openwakeword/core.wake_word/memory.config_manager lazily; concurrent

@@ -50,22 +50,11 @@ except Exception as _e:            # noqa: BLE001 - reported, never fatal
     print(f"[Video] playback unavailable ({_e}) — the HUD will not show video.")
 
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSlider, QSplitter,
     QGraphicsScene, QGraphicsView,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
-
-# 3D Iron Man avatar: QtWebEngineWidgets MUST be imported before the
-# QCoreApplication/QApplication instance exists, or the import fails and the
-# 3D mode is silently skipped. ui.py is imported by main.py before the app is
-# created, so this is the safe place. A failure here only disables 3D.
-try:
-    from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
-    HAVE_WEBENGINE = True
-except Exception as _e:            # noqa: BLE001 - reported, never fatal
-    HAVE_WEBENGINE = False
-    print(f"[3D] PyQt6-WebEngine import failed ({_e}) — 3D Iron Man unavailable.")
 
 try:
     from core.avatar import HoloAvatar
@@ -123,6 +112,7 @@ class C:
     PRI_GHO   = "#001f2e"
     ACC       = "#ff6b00"
     ACC2      = "#ffcc00"
+    AMBER     = "#F2B84B"
     GREEN     = "#00ff88"
     GREEN_D   = "#00aa55"
     RED       = "#ff3355"
@@ -458,25 +448,6 @@ class HudCanvas(QWidget):
             except Exception:
                 self._noor = None
 
-        # 3D avatar — real robot GLB in a WebEngine view (child of the canvas).
-        # Only live when the model file + WebEngine both exist; otherwise the
-        # "3d" style is reported unavailable and never faked.
-        self._avatar3d = None
-        self._avatar3d_ok = False
-        try:
-            from core.avatar3d import Avatar3D, is_3d_available, availability_reason
-            if is_3d_available():
-                self._avatar3d = Avatar3D(
-                    self, log=lambda m: print(m, flush=True))
-                self._avatar3d_ok = self._avatar3d.available()
-                if self._avatar3d_ok and self._avatar3d.widget is not None:
-                    self._avatar3d.widget.hide()
-            else:
-                print(f"[3D] {availability_reason()}", flush=True)
-        except Exception:
-            self._avatar3d = None
-            self._avatar3d_ok = False
-
         # Which centrepiece to draw. Read once here and changed live by the
         # settings toggle; the objects are kept either way so switching
         # back is instant and costs no reload.
@@ -485,13 +456,9 @@ class HudCanvas(QWidget):
             self.hud_style = get_hud_style()
         except Exception:
             self.hud_style = "core"
-        # "3d" is live when the robot GLB + WebEngine exist; otherwise fall
-        # back to core and say so — never a fake 3D.
-        if self.hud_style == "3d" and not self._avatar3d_ok:
+        # Guard: a stale "3d" style from an older install falls back to core.
+        if self.hud_style == "3d":
             self.hud_style = "core"
-            self._3d_unavailable = True
-        else:
-            self._3d_unavailable = False
         self._core_phase = 0.0
 
         self._tick       = 0
@@ -530,26 +497,6 @@ class HudCanvas(QWidget):
         self._tmr.timeout.connect(self._step)
         self._tmr.start(16)
 
-
-    def _layout_avatar3d(self) -> None:
-        """Position the 3D view over the centre band; show only in 3d mode."""
-        av = getattr(self, "_avatar3d", None)
-        if av is None or av.widget is None:
-            return
-        try:
-            W, H = self.width(), self.height()
-            band_t, band_h = 12.0, max(60.0, H - 12.0 - 12.0)
-            r = min(W * 0.46, band_h / 2.0)
-            cx, cy = W / 2.0, band_t + band_h / 2.0
-            av.widget.setGeometry(int(cx - r), int(cy - r),
-                                  int(r * 2), int(r * 2))
-            if self.hud_style == "3d" and self._avatar3d_ok:
-                av.show()
-                av.widget.raise_()
-            else:
-                av.hide()
-        except Exception:
-            pass
 
     def glance(self, dx: float, dy: float, hold: float = 1.1) -> None:
         """Ask the avatar to look somewhere for a moment (see HoloAvatar.glance)."""
@@ -650,6 +597,10 @@ class HudCanvas(QWidget):
             return "OFFLINE"
         if getattr(self, "_noor_error", False):
             return "ERROR"
+        # Degraded: Live voice is down, text-only fallback is serving.
+        # The core shows this honestly instead of pretending voice works.
+        if getattr(self, "_degraded_active", False):
+            return "DEGRADED"
         # Awaiting approval: real pending requests in the OMNICONTROL gateway.
         try:
             from core.omnicontrol import gateway as _gw
@@ -732,16 +683,17 @@ class HudCanvas(QWidget):
                               v_hop=(sched[2] if sched is not None else 0.02))
         elif self._noor is not None and self.hud_style == "core":
             # NoorCore Living Intelligence Core — state-driven, audio-reactive.
-            self._noor.set_state(self._noor_state())
+            _ns = self._noor_state()
+            self._noor.set_state(_ns)
+            # EXECUTING progress comes from REAL orchestrator step counts;
+            # None keeps the honest indeterminate sweep.
+            if _ns == "EXECUTING":
+                try:
+                    from core.omnicontrol import orchestrator as _orc
+                    self._noor.set_progress(_orc.active_task_progress())
+                except Exception:
+                    self._noor.set_progress(None)
             self._noor.step(dt, amp)
-        elif self.hud_style == "3d" and getattr(self, "_avatar3d", None) is not None:
-            # Real 3D Iron Man — same state/amp every other mode uses.
-            try:
-                self._avatar3d.set_state(self._noor_state())
-                self._avatar3d.set_amp(amp if self.speaking else amp * 0.3)
-                self._layout_avatar3d()
-            except Exception:
-                pass
         else:
             # Legacy fallback core (pre-NoorCore paint): slow "breathing" base
             # target, lifted by the level. Kept for the Classic theme path.
@@ -1014,11 +966,6 @@ class HudCanvas(QWidget):
                     _acc = qcol(C.PRI)
             self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
 
-        # 3D avatar — the real robot in a WebEngine view laid over the canvas.
-        # The view paints itself; nothing is drawn here for this mode.
-        elif self.hud_style == "3d" and getattr(self, "_avatar3d_ok", False):
-            pass
-
         # NoorCore Living Intelligence Core — the default centrepiece.
         elif self._noor is not None and self.hud_style == "core":
             _band_t = 12.0
@@ -1041,7 +988,29 @@ class HudCanvas(QWidget):
 
         # status text
         sy = _sy_status
-        if self.muted:
+        # In core mode the label mirrors the NoorCore state in plain words,
+        # so the user always knows what the animation means.
+        _noor_label = None
+        if self.hud_style == "core" and getattr(self, "_noor", None) is not None:
+            _noor_label = {
+                "IDLE":              ("○  Ready", C.PRI_DIM),
+                "LISTENING":         ("●  Listening…", C.GREEN),
+                "THINKING":          ("◈  Thinking…", C.ACC2),
+                "SPEAKING":          ("●  Speaking", C.ACC),
+                "EXECUTING":         ("▷  Working…", C.ACC),
+                "AWAITING_APPROVAL": ("⚠  Needs your approval", C.AMBER),
+                "ERROR":             ("✕  Something went wrong", C.RED),
+                "OFFLINE":           ("⊘  Offline", C.MUTED_C),
+                "DEGRADED":          ("⚠  Text-only mode", C.AMBER),
+            }.get(self._noor.state)
+        if _noor_label is not None and not self.muted:
+            _t, _c = _noor_label
+            # Executing with real progress shows the honest percentage.
+            if (self._noor.state == "EXECUTING"
+                    and self._noor._progress is not None):
+                _t = f"▷  Working… {int(self._noor._progress * 100)}%"
+            txt, col = _t, qcol(_c)
+        elif self.muted:
             txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
         elif self.speaking:
             txt, col = "●  SPEAKING",  qcol(C.ACC)
@@ -2171,6 +2140,507 @@ class _HudOverlay(QWidget):
         super().closeEvent(e)
 
 
+class OnboardingOverlay(_HudOverlay):
+    """First-run conversational onboarding (Personal Companion, Phase 2).
+
+    Walks the user through the 9 onboarding questions (assistant-name
+    question removed per user directive) using the step definitions in
+    core/onboarding.py. Fully offline — no model needed.
+
+    - Progress bar + step counter, Back / Skip navigation.
+    - Every answer is saved to the profile immediately, so an interrupted
+      onboarding resumes where it left off.
+    - Emits `done` when the profile is confirmed or the user dismisses it.
+    """
+
+    done = pyqtSignal()
+
+    _OW = 560
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            OnboardingOverlay {{
+                background: rgba(0, 8, 12, 248);
+                border: 1px solid {C.BORDER_B}; border-radius: 8px;
+            }}
+            QLabel {{ color: {C.TEXT}; background: transparent; }}
+        """)
+        self.setFixedWidth(self._OW)
+
+        self._answers: dict = {}
+        self._steps: list = []
+        self._idx = 0
+        self._input_widgets: dict = {}
+
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(24, 20, 24, 20)
+        self._lay.setSpacing(10)
+
+        self._title = QLabel()
+        self._title.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+        self._title.setStyleSheet(f"color: {C.PRI};")
+        self._lay.addWidget(self._title)
+
+        self._progress = QProgressBar()
+        self._progress.setTextVisible(True)
+        self._progress.setStyleSheet(f"""
+            QProgressBar {{ background: {C.PANEL}; border: 1px solid {C.BORDER};
+                            border-radius: 3px; height: 14px; color: {C.TEXT_DIM}; }}
+            QProgressBar::chunk {{ background: {C.PRI}; border-radius: 2px; }}
+        """)
+        self._lay.addWidget(self._progress)
+
+        self._speaker = QLabel("🤖  SHIRAZI ASKS")
+        self._speaker.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._speaker.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
+        self._lay.addWidget(self._speaker)
+        self._qtext = QLabel()
+        self._qtext.setWordWrap(True)
+        self._qtext.setFont(QFont("Courier New", 11))
+        self._qtext.setStyleSheet(
+            f"color: {C.WHITE}; background: {C.PANEL};"
+            f" border: 1px solid {C.BORDER}; border-radius: 6px;"
+            f" padding: 10px 12px;")
+        self._qtext.setContentsMargins(0, 4, 0, 4)
+        self._lay.addWidget(self._qtext)
+
+        self._note = QLabel()
+        self._note.setWordWrap(True)
+        self._note.setFont(QFont("Courier New", 8))
+        self._note.setStyleSheet(f"color: {C.TEXT_DIM};")
+        self._lay.addWidget(self._note)
+
+        # Dynamic input area — rebuilt per step.
+        self._input_area = QWidget()
+        self._input_lay = QVBoxLayout(self._input_area)
+        self._input_lay.setContentsMargins(0, 0, 0, 0)
+        self._input_lay.setSpacing(6)
+        self._lay.addWidget(self._input_area)
+
+        nav = QHBoxLayout()
+        nav.setSpacing(8)
+        self._back_btn = QPushButton("← Back")
+        self._back_btn.clicked.connect(self._on_back)
+        self._skip_btn = QPushButton("Skip →")
+        self._skip_btn.clicked.connect(self._on_skip)
+        self._next_btn = QPushButton("Next →")
+        self._next_btn.clicked.connect(self._on_next)
+        self._next_btn.setDefault(True)
+        for b in (self._back_btn, self._skip_btn, self._next_btn):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"""
+                QPushButton {{ color: {C.TEXT}; background: {C.PANEL};
+                              border: 1px solid {C.BORDER}; border-radius: 4px;
+                              padding: 6px 14px; }}
+                QPushButton:hover {{ border-color: {C.PRI}; color: {C.PRI}; }}
+                QPushButton:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; }}
+            """)
+        nav.addWidget(self._back_btn)
+        nav.addStretch()
+        nav.addWidget(self._skip_btn)
+        nav.addWidget(self._next_btn)
+        self._lay.addLayout(nav)
+
+        self._refresh_steps(resume=True)
+        self._render()
+
+    # ── flow ──────────────────────────────────────────────────────────
+    def _refresh_steps(self, resume=False):
+        from core import onboarding as _ob
+        from core import profile as _prof
+        self._steps = _ob.visible_steps(self._answers)
+        # Only restore the saved step when (re)opening — never during
+        # Back/Next navigation, or Back snaps forward to the saved spot.
+        if resume:
+            try:
+                saved = int(_prof.get_field("onboarding_step", 0) or 0)
+            except Exception:
+                saved = 0
+            self._idx = max(0, min(saved, len(self._steps) - 1))
+        else:
+            self._idx = max(0, min(self._idx, len(self._steps) - 1))
+
+    def _step(self):
+        return self._steps[self._idx] if 0 <= self._idx < len(self._steps) else None
+
+    def _persist(self):
+        from core import profile as _prof
+        try:
+            _prof.set_field("onboarding_step", self._idx)
+        except Exception:
+            pass
+
+    def _render(self):
+        from core import onboarding as _ob
+        step = self._step()
+        if step is None:
+            return
+        total = len(self._steps)
+        cur, _ = _ob.progress(self._idx, total)
+        self._progress.setMaximum(total)
+        self._progress.setValue(cur)
+        self._progress.setFormat(f"Step {cur} of {total}")
+        self._title.setText(step.get("title", ""))
+        self._qtext.setText(step.get("text", ""))
+        note = step.get("note", "")
+        self._note.setText(note)
+        self._note.setVisible(bool(note))
+
+        # Clear the input area — widgets AND layouts (a removed layout
+        # leaves its buttons behind as ghosts otherwise).
+        self._clear_layout(self._input_lay)
+        self._input_widgets = {}
+
+        kind = step.get("kind")
+        render = getattr(self, f"_render_{kind}", None)
+        if render:
+            render(step)
+
+        self._back_btn.setEnabled(self._idx > 0)
+        self._skip_btn.setVisible(bool(step.get("skippable")))
+        # Next is hidden for kinds that auto-advance or have custom buttons.
+        self._next_btn.setVisible(kind not in ("intro", "summary", "choice"))
+        self._persist()
+        self.adjustSize()
+
+    # ── input renderers ───────────────────────────────────────────────
+    def _style_input(self, w):
+        w.setStyleSheet(f"""
+            QLineEdit {{ color: {C.TEXT}; background: {C.PANEL};
+                        border: 1px solid {C.BORDER}; border-radius: 4px;
+                        padding: 6px; }}
+        """)
+        return w
+
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+            child = item.layout()
+            if child is not None:
+                self._clear_layout(child)
+
+    def _render_intro(self, step):
+        row = QHBoxLayout()
+        go = QPushButton("Let's begin →")
+        go.setCursor(Qt.CursorShape.PointingHandCursor)
+        go.setStyleSheet(f"""QPushButton {{ color: #000; background: {C.PRI};
+            border: none; border-radius: 4px; padding: 8px 18px; font-weight: bold; }}""")
+        go.clicked.connect(self._on_next)
+        later = QPushButton("Not now")
+        later.setStyleSheet(f"""QPushButton {{ color: {C.TEXT_DIM}; background: transparent;
+            border: 1px solid {C.BORDER}; border-radius: 4px; padding: 8px 14px; }}""")
+        later.clicked.connect(self._on_dismiss)
+        row.addWidget(go)
+        row.addWidget(later)
+        row.addStretch()
+        self._input_lay.addLayout(row)
+
+    def _render_text(self, step):
+        from core import profile as _prof
+        edit = QLineEdit()
+        self._style_input(edit)
+        edit.setPlaceholderText(step.get("placeholder", ""))
+        try:
+            cur = _prof.get_field(step.get("field", ""), "") or ""
+            if cur:
+                edit.setText(cur)
+        except Exception:
+            pass
+        edit.returnPressed.connect(self._on_next)
+        self._input_lay.addWidget(edit)
+        self._input_widgets["text"] = edit
+        edit.setFocus()
+
+    def _chip(self, label, checked=False, checkable=True):
+        b = QPushButton(label)
+        b.setCheckable(checkable)
+        b.setChecked(checked)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._paint_chip(b)
+        b.toggled.connect(lambda _c, _b=b: self._paint_chip(_b))
+        return b
+
+    def _paint_chip(self, b):
+        # Explicit font + generous padding: the old 6px padding with a
+        # 10px radius clipped the label to a sliver on some systems.
+        if b.isChecked():
+            b.setStyleSheet(f"""QPushButton {{ color: #000000; background: {C.PRI};
+                border: none; border-radius: 6px; padding: 10px 14px;
+                font-size: 11pt; text-align: center; }}""")
+        else:
+            b.setStyleSheet(f"""QPushButton {{ color: {C.TEXT}; background: {C.PANEL};
+                border: 1px solid {C.BORDER}; border-radius: 6px;
+                padding: 10px 14px; font-size: 11pt; text-align: center; }}
+                QPushButton:hover {{ border-color: {C.PRI}; color: {C.PRI}; }}""")
+
+    def _render_choice(self, step):
+        for value, label in step.get("options", []):
+            b = self._chip(label, checkable=False)
+            b.clicked.connect(lambda _c, _v=value: self._choose(_v))
+            self._input_lay.addWidget(b)
+
+    def _render_multichoice(self, step):
+        from core import profile as _prof
+        cur = []
+        try:
+            cur = _prof.get_field(step.get("field", ""), []) or []
+        except Exception:
+            pass
+        chips = []
+        for value, label in step.get("options", []):
+            b = self._chip(label, checked=(value in cur))
+            self._input_lay.addWidget(b)
+            chips.append((value, b))
+        self._input_widgets["chips"] = chips
+
+    def _render_slider(self, step):
+        from core import profile as _prof
+        try:
+            cur = float(_prof.get_field(step.get("field", ""), 1.0) or 1.0)
+        except Exception:
+            cur = 1.0
+        lab = QLabel(f"{cur:.1f}x")
+        lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setMinimum(int(step.get("min", 0.5) * 10))
+        slider.setMaximum(int(step.get("max", 2.0) * 10))
+        slider.setValue(int(cur * 10))
+        slider.valueChanged.connect(lambda v: lab.setText(f"{v / 10:.1f}x"))
+        slider.setStyleSheet(f"""QSlider::groove:horizontal {{ background: {C.PANEL}; height: 6px; }}
+            QSlider::handle:horizontal {{ background: {C.PRI}; width: 14px; border-radius: 7px; }}""")
+        self._input_lay.addWidget(lab)
+        self._input_lay.addWidget(slider)
+        self._input_widgets["slider"] = slider
+
+    def _render_toggles(self, step):
+        from core import profile as _prof
+        try:
+            prefs = _prof.get_field(step.get("field", ""), {}) or {}
+        except Exception:
+            prefs = {}
+        boxes = []
+        for key, label in step.get("options", []):
+            cb = QCheckBox(label)
+            cb.setChecked(bool(prefs.get(key, True)))
+            cb.setFont(QFont("Courier New", 10))
+            cb.setStyleSheet(
+                f"QCheckBox {{ color: {C.TEXT}; font-size: 11pt; spacing: 10px; }}"
+                f"QCheckBox::indicator {{ width: 18px; height: 18px; }}")
+            self._input_lay.addWidget(cb)
+            boxes.append((key, cb))
+        self._input_widgets["toggles"] = boxes
+
+    def _render_rules(self, step):
+        from core import profile as _prof
+        try:
+            cur = _prof.get_field(step.get("field", ""), []) or []
+        except Exception:
+            cur = []
+        chips = []
+        for rule in step.get("options", []):
+            b = self._chip(rule, checked=(rule in cur))
+            b.setStyleSheet(b.styleSheet())  # keep chip paint
+            self._input_lay.addWidget(b)
+            chips.append((rule, b))
+        self._input_widgets["chips"] = chips
+        custom = QLineEdit()
+        self._style_input(custom)
+        custom.setPlaceholderText("Or write your own rule…")
+        self._input_lay.addWidget(custom)
+        self._input_widgets["custom"] = custom
+
+    def _render_customize(self, step):
+        self._render_choice(step)
+
+    def _render_summary(self, step):
+        from core import profile as _prof
+        s = _prof.profile_summary()
+        lang = s["languages"]
+        lines = [
+            f"Call me: <b>{s['preferred_name'] or '—'}</b>",
+            f"Language: <b>{lang['conversation']}</b>",
+            f"Style: <b>{', '.join(s['style'])}</b> · Length: <b>{s['length']}</b>",
+            f"Rules saved: <b>{s['rules']}</b> · Boundaries: <b>{s['boundaries']}</b>",
+        ]
+        lab = QLabel("<br>".join(lines))
+        lab.setTextFormat(Qt.TextFormat.RichText)
+        lab.setWordWrap(True)
+        self._input_lay.addWidget(lab)
+        row = QHBoxLayout()
+        confirm = QPushButton("✓ Confirm — remember this")
+        confirm.setCursor(Qt.CursorShape.PointingHandCursor)
+        confirm.setStyleSheet(f"""QPushButton {{ color: #000; background: {C.PRI};
+            border: none; border-radius: 4px; padding: 8px 18px; font-weight: bold; }}""")
+        confirm.clicked.connect(self._on_confirm)
+        row.addWidget(confirm)
+        row.addStretch()
+        self._input_lay.addLayout(row)
+
+    # ── navigation ────────────────────────────────────────────────────
+    def _collect_answer(self):
+        step = self._step()
+        kind = step.get("kind") if step else None
+        w = self._input_widgets
+        if kind == "text":
+            return w["text"].text().strip()
+        if kind == "multichoice":
+            return [v for v, b in w.get("chips", []) if b.isChecked()]
+        if kind == "slider":
+            return w["slider"].value() / 10.0
+        if kind == "toggles":
+            return {k: cb.isChecked() for k, cb in w.get("toggles", [])}
+        if kind == "rules":
+            return {"preset": [v for v, b in w.get("chips", []) if b.isChecked()],
+                    "custom": w["custom"].text().strip()}
+        return None
+
+    def _apply_current(self):
+        from core import onboarding as _ob
+        from core import profile as _prof
+        step = self._step()
+        if step is None or step["kind"] in ("intro", "summary"):
+            return
+        answer = self._collect_answer()
+        updates = _ob.apply_answer(step["id"], answer, _prof.load_profile())
+        if step["id"] == "language_scope":
+            self._answers["language_scope"] = answer
+        if updates:
+            _prof.update_profile(updates)
+
+    def _advance(self):
+        self._refresh_steps()
+        if self._idx + 1 < len(self._steps):
+            self._idx += 1
+            self._render()
+        else:
+            self._on_confirm()
+
+    def _choose(self, value):
+        from core import onboarding as _ob
+        from core import profile as _prof
+        step = self._step()
+        if step is None or step.get("kind") not in ("choice",):
+            return
+        if step["id"] == "language_scope":
+            self._answers["language_scope"] = value
+        elif step["id"] == "customize":
+            self._handle_customize(value)
+            return
+        updates = _ob.apply_answer(step["id"], value, _prof.load_profile())
+        if updates:
+            _prof.update_profile(updates)
+        self._advance()
+
+    def _handle_customize(self, value):
+        # Jump to the relevant settings; onboarding continues afterwards.
+        try:
+            if value == "theme":
+                self._open_settings_section("appearance")
+            elif value == "companion":
+                self._open_settings_section("companion")
+        except Exception:
+            pass
+        self._advance()
+
+    def _open_settings_section(self, _section):
+        # Hook for MainWindow to scroll/open settings; best-effort.
+        win = self.window()
+        if hasattr(win, "open_settings_section"):
+            win.open_settings_section(_section)
+
+    def _on_next(self):
+        step = self._step()
+        if step is None:
+            return
+        if step["kind"] == "summary":
+            self._on_confirm()
+            return
+        self._apply_current()
+        self._advance()
+
+    def _on_back(self):
+        if self._idx > 0:
+            self._idx -= 1
+            self._render()
+
+    def _on_skip(self):
+        step = self._step()
+        if step and not step.get("skippable"):
+            return
+        # Skipping records nothing; just move on.
+        if step and step["id"] == "language_scope":
+            self._answers["language_scope"] = "same"
+            from core import onboarding as _ob
+            from core import profile as _prof
+            _prof.update_profile(_ob.apply_answer("language_scope", "same",
+                                                  _prof.load_profile()))
+        self._advance()
+
+    def _on_confirm(self):
+        from core import profile as _prof
+        # Mirror the key identity facts into semantic memory (source=
+        # onboarding) so they appear in the Memory Center and are
+        # recallable even before the next Live reconnect rebuilds the
+        # system prompt. Dedup keeps re-onboarding from duplicating.
+        try:
+            from memory import memory_manager as _mm
+            _d = _prof.load_profile()
+            _facts = []
+            if _d.get("preferred_name"):
+                _facts.append(("preferred_name",
+                    "Call me " + _d["preferred_name"], "identity"))
+            if _d.get("preferred_form_of_address"):
+                _facts.append(("form_of_address",
+                    "Preferred form of address: " + _d["preferred_form_of_address"],
+                    "identity"))
+            _lang = _d.get("conversation_language", "english")
+            _facts.append(("language",
+                "My preferred language is " + _lang.replace("_", " "),
+                "preferences"))
+            _style = ", ".join(_d.get("communication_style", ["friendly"]))
+            _facts.append(("comm_style",
+                "Communication style: " + _style, "preferences"))
+            for _key, _val, _cat in _facts:
+                _mm.remember_explicit(_key, _val, _cat, origin="onboarding")
+        except Exception:
+            pass
+        _prof.set_field("onboarding_completed", True)
+        _prof.set_field("onboarding_step", 0)
+        try:
+            self._log("SYS: Profile saved — Shirazi will remember your preferences.")
+        except Exception:
+            pass
+        self.hide()
+        self.done.emit()
+
+    def _on_dismiss(self):
+        # "Not now" — snooze the auto-prompt; the drawer can reopen it.
+        try:
+            from core import profile as _prof
+            _prof.set_field("onboarding_snoozed", True)
+        except Exception:
+            pass
+        self.hide()
+        self.done.emit()
+
+    def _log(self, text):
+        win = self.window()
+        if hasattr(win, "_log"):
+            win._log.append_log(text)
+
+    def showEvent(self, e):
+        # Resume the saved step only on a fresh open, not every show.
+        if not self.isVisible():
+            self._refresh_steps(resume=True)
+        super().showEvent(e)
+
+
 class ConfirmBanner(_HudOverlay):
     """The gate in front of an action that cannot be taken back.
 
@@ -2263,6 +2733,15 @@ class ApprovalCard(_HudOverlay):
     resolved = pyqtSignal(str, str)  # (request_id, decision)
     _OW = 440
 
+    # Risk tier -> (label, color key). The border, header and allow buttons
+    # all take the risk color so the eye knows the stakes before reading.
+    _RISK_STYLE = {
+        "LOW":      ("LOW RISK", "cyan"),
+        "MODERATE": ("MODERATE RISK", "gold"),
+        "HIGH":     ("HIGH RISK", "amber"),
+        "CRITICAL": ("CRITICAL — BLOCKED BY DEFAULT", "red"),
+    }
+
     def __init__(self, request: dict, parent=None):
         super().__init__(parent)
         self._req = request
@@ -2273,11 +2752,15 @@ class ApprovalCard(_HudOverlay):
             _th = _nt.get_theme(_gt())
         except Exception:
             _th = {"amber": "#F2B84B", "text": "#F2F7FC",
-                   "text_dim": "#A6B6C8", "surface": "#101824"}
+                   "text_dim": "#A6B6C8", "surface": "#101824",
+                   "cyan": "#38BDF8", "gold": "#E9BD68", "red": "#FF647C"}
+        risk = str(request.get("risk", "MODERATE")).upper()
+        risk_label, color_key = self._RISK_STYLE.get(risk, ("RISK", "amber"))
+        rc = _th.get(color_key, _th["amber"])
         self.setStyleSheet(f"""
             ApprovalCard {{
                 background: {_th["surface"]};
-                border: 1px solid {_th["amber"]};
+                border: 2px solid {rc};
                 border-radius: 10px;
             }}
         """)
@@ -2287,17 +2770,40 @@ class ApprovalCard(_HudOverlay):
         lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(8)
 
+        top = QHBoxLayout()
         hdr = QLabel("⚠  PERMISSION REQUEST")
         hdr.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color: {_th['amber']}; background: transparent;")
-        lay.addWidget(hdr)
+        hdr.setStyleSheet(f"color: {rc}; background: transparent;")
+        top.addWidget(hdr)
+        top.addStretch(1)
+        # Elapsed time — ticks every second so the user sees how long the
+        # agent has been waiting on them.
+        self._ts = float(request.get("ts", 0) or 0)
+        self._elapsed = QLabel("")
+        self._elapsed.setFont(QFont("Segoe UI", 9))
+        self._elapsed.setStyleSheet(
+            f"color: {_th['text_dim']}; background: transparent;")
+        top.addWidget(self._elapsed)
+        lay.addLayout(top)
+
+        risk_lbl = QLabel(risk_label)
+        risk_lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        risk_lbl.setStyleSheet(
+            f"color: {rc}; background: transparent;"
+            f"border: 1px solid {rc}; border-radius: 4px; padding: 2px 8px;")
+        risk_lbl.setSizePolicy(QSizePolicy.Policy.Fixed,
+                               QSizePolicy.Policy.Fixed)
+        lay.addWidget(risk_lbl)
 
         ttl = QLabel(f"{request.get('tool', '?')}")
         ttl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         ttl.setStyleSheet(f"color: {_th['text']}; background: transparent;")
         lay.addWidget(ttl)
 
-        det = QLabel(f"{request.get('resource', '')}\n{request.get('reason', '')}")
+        op = str(request.get("op", "")).upper()
+        det = QLabel(f"{request.get('resource', '')}"
+                     + (f"  ·  {op}" if op else "")
+                     + f"\n{request.get('reason', '')}")
         det.setWordWrap(True)
         det.setFont(QFont("Segoe UI", 9))
         det.setStyleSheet(f"color: {_th['text_dim']}; background: transparent;")
@@ -2310,18 +2816,31 @@ class ApprovalCard(_HudOverlay):
             btn = QPushButton(label)
             btn.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            if dec == "deny":
-                btn.setStyleSheet("color: #FF647C; background: transparent;"
-                                  "border: 1px solid #FF647C; border-radius: 6px;"
-                                  "padding: 8px;")
-            else:
-                btn.setStyleSheet(f"color: {_th['amber']}; background: transparent;"
-                                  f"border: 1px solid {_th['amber']}; border-radius: 6px;"
-                                  "padding: 8px;")
+            bc = "#FF647C" if dec == "deny" else rc
+            btn.setStyleSheet(f"color: {bc}; background: transparent;"
+                              f"border: 1px solid {bc}; border-radius: 6px;"
+                              "padding: 8px;")
             btn.clicked.connect(
                 lambda _=False, d=dec: self._decide(d))
             row.addWidget(btn)
         lay.addLayout(row)
+
+        # Elapsed-time ticker.
+        self._tick_tmr = QTimer(self)
+        self._tick_tmr.timeout.connect(self._tick_elapsed)
+        self._tick_tmr.start(1000)
+        self._tick_elapsed()
+
+    def _tick_elapsed(self) -> None:
+        try:
+            import time as _t
+            s = max(0, int(_t.time() - self._ts)) if self._ts else 0
+            m, sec = divmod(s, 60)
+            txt = f"waiting {m:02d}:{sec:02d}"
+            if hasattr(self, "_elapsed"):
+                self._elapsed.setText(txt)
+        except Exception:
+            pass
 
     def _decide(self, decision: str) -> None:
         try:
@@ -2331,6 +2850,228 @@ class ApprovalCard(_HudOverlay):
             pass
         self.resolved.emit(self._req["id"], decision)
         self.hide()
+
+
+class NoorCorePanel(_HudOverlay):
+    """NoorCore settings — theme, motion, text size in one place.
+
+    - Theme picker: three swatch buttons (NoorCore Dark / Classic / High
+      Contrast) with a live mini-core preview that re-renders instantly.
+    - Reduced motion toggle: collapses animations to still frames.
+    - Text scale slider: 80%–200% for the HUD text.
+    Every control applies immediately and persists via config_manager.
+    """
+    changed = pyqtSignal()
+    _OW = 420
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        try:
+            from memory.config_manager import get_theme as _gt
+            from core import noorcore_tokens as _nt
+            _th = _nt.get_theme(_gt())
+        except Exception:
+            _th = {"text": "#F2F7FC", "text_dim": "#A6B6C8",
+                   "surface": "#101824", "cyan": "#38BDF8"}
+        self._th = _th
+        self.setStyleSheet(f"""
+            NoorCorePanel {{
+                background: {_th["surface"]};
+                border: 1px solid {_th["cyan"]};
+                border-radius: 10px;
+            }}
+        """)
+        self.setFixedWidth(self._OW)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(10)
+
+        hdr = QLabel("◉  NOORCORE SETTINGS")
+        hdr.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        hdr.setStyleSheet(f"color: {_th['cyan']}; background: transparent;")
+        lay.addWidget(hdr)
+
+        # ── live preview: a mini core that re-renders on every change ──
+        from core.noorcore import NoorCore
+        self._preview = NoorCore()
+        self._preview.set_state("THINKING")
+        self._preview_w = _CorePreview(self._preview, self)
+        self._preview_w.setFixedHeight(120)
+        lay.addWidget(self._preview_w)
+
+        # ── theme swatches ──
+        lay.addWidget(self._section("THEME"))
+        try:
+            from core import noorcore_tokens as _nt2
+            themes = [("noorcore", "NoorCore Dark"), ("classic", "Classic"),
+                      ("high_contrast", "High Contrast")]
+            cur_theme = _gt()
+        except Exception:
+            themes, cur_theme = [], ""
+        trow = QHBoxLayout()
+        trow.setSpacing(8)
+        self._theme_btns = {}
+        for key, label in themes:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setChecked(key == cur_theme)
+            b.setFont(QFont("Segoe UI", 9))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            try:
+                _tc = _nt2.THEMES[key]["cyan"]
+            except Exception:
+                _tc = _th["cyan"]
+            b.setStyleSheet(
+                f"QPushButton {{ color: {_th['text']}; background: transparent;"
+                f"border: 1px solid {_tc}; border-radius: 6px; padding: 8px; }}"
+                f"QPushButton:checked {{ background: {_tc}; color: #080D14; "
+                f"font-weight: bold; }}")
+            b.clicked.connect(lambda _=False, k=key: self._pick_theme(k))
+            trow.addWidget(b)
+            self._theme_btns[key] = b
+        lay.addLayout(trow)
+
+        # ── reduced motion ──
+        lay.addWidget(self._section("MOTION"))
+        try:
+            from core.accessibility import get_reduced_motion
+            rm = bool(get_reduced_motion())
+        except Exception:
+            rm = False
+        self._motion_btn = QPushButton(
+            "Reduced motion: ON" if rm else "Reduced motion: OFF")
+        self._motion_btn.setCheckable(True)
+        self._motion_btn.setChecked(rm)
+        self._motion_btn.setFont(QFont("Segoe UI", 9))
+        self._motion_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._motion_btn.setStyleSheet(
+            f"QPushButton {{ color: {_th['text']}; background: transparent;"
+            f"border: 1px solid {_th['cyan']}; border-radius: 6px; "
+            f"padding: 8px; }}"
+            f"QPushButton:checked {{ background: {_th['cyan']}; "
+            f"color: #080D14; font-weight: bold; }}")
+        self._motion_btn.clicked.connect(self._toggle_motion)
+        lay.addWidget(self._motion_btn)
+
+        # ── text scale ──
+        lay.addWidget(self._section("TEXT SIZE"))
+        try:
+            from core.accessibility import get_text_scale
+            ts = float(get_text_scale() or 1.0)
+        except Exception:
+            ts = 1.0
+        srow = QHBoxLayout()
+        self._scale_lbl = QLabel(f"{int(ts * 100)}%")
+        self._scale_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        self._scale_lbl.setStyleSheet(
+            f"color: {_th['cyan']}; background: transparent;")
+        self._scale_lbl.setFixedWidth(48)
+        srow.addWidget(self._scale_lbl)
+        from PyQt6.QtWidgets import QSlider
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setRange(80, 200)
+        self._slider.setValue(int(ts * 100))
+        self._slider.setTickInterval(20)
+        self._slider.valueChanged.connect(self._scale_changed)
+        srow.addWidget(self._slider)
+        lay.addLayout(srow)
+
+        close = QPushButton("DONE")
+        close.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(
+            f"color: {_th['cyan']}; background: transparent;"
+            f"border: 1px solid {_th['cyan']}; border-radius: 6px; "
+            f"padding: 8px;")
+        close.clicked.connect(self.hide)
+        lay.addWidget(close)
+
+    def _section(self, title: str):
+        lbl = QLabel(title)
+        lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        lbl.setStyleSheet(
+            f"color: {self._th['text_dim']}; background: transparent;")
+        return lbl
+
+    def _pick_theme(self, key: str) -> None:
+        try:
+            from memory.config_manager import save_theme
+            save_theme(key)
+        except Exception:
+            pass
+        for k, b in self._theme_btns.items():
+            b.setChecked(k == key)
+        self._refresh_preview()
+        self.changed.emit()
+
+    def _toggle_motion(self) -> None:
+        on = self._motion_btn.isChecked()
+        try:
+            from core.accessibility import set_reduced_motion
+            set_reduced_motion(on)
+        except Exception:
+            pass
+        self._motion_btn.setText(
+            "Reduced motion: ON" if on else "Reduced motion: OFF")
+        self._refresh_preview()
+        self.changed.emit()
+
+    def _scale_changed(self, v: int) -> None:
+        self._scale_lbl.setText(f"{v}%")
+        try:
+            from core.accessibility import set_text_scale
+            set_text_scale(v / 100.0)
+        except Exception:
+            pass
+        self.changed.emit()
+
+    def _refresh_preview(self) -> None:
+        try:
+            from memory.config_manager import get_theme as _gt
+            from core import noorcore_tokens as _nt
+            from core.accessibility import get_reduced_motion
+            self._preview.set_reduced_motion(bool(get_reduced_motion()))
+            self._preview_w._theme = _nt.get_theme(_gt())
+            self._preview_w.update()
+        except Exception:
+            pass
+
+
+class _CorePreview(QWidget):
+    """Small live NoorCore preview for the settings panel."""
+
+    def __init__(self, core, parent=None):
+        super().__init__(parent)
+        self._core = core
+        try:
+            from memory.config_manager import get_theme as _gt
+            from core import noorcore_tokens as _nt
+            self._theme = _nt.get_theme(_gt())
+        except Exception:
+            self._theme = {}
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._tick)
+        self._tmr.start(50)
+
+    def _tick(self):
+        try:
+            self._core.step(0.05, 0.35)
+        except Exception:
+            pass
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        try:
+            self._core.paint(p, self.width() / 2.0, self.height() / 2.0,
+                             min(self.width(), self.height()) * 0.32,
+                             self._theme)
+        except Exception:
+            pass
+        p.end()
 
 
 class AudioDeviceOverlay(_HudOverlay):
@@ -2484,6 +3225,8 @@ class MemoryOverlay(_HudOverlay):
         """)
         self.setFixedWidth(self._OW)
 
+        self._mem_search = ""
+        self._mem_cat = None
         self._lay = QVBoxLayout(self)
         self._lay.setContentsMargins(20, 16, 20, 16)
         self._lay.setSpacing(5)
@@ -2567,6 +3310,12 @@ class MemoryOverlay(_HudOverlay):
         self._lay.addWidget(sep)
 
         rows = all_entries_for_ui()
+        if self._mem_cat:
+            rows = [r for r in rows if r["category"] == self._mem_cat]
+        if self._mem_search.strip():
+            _q = self._mem_search.strip().lower()
+            rows = [r for r in rows
+                    if _q in r["key"].lower() or _q in r["value"].lower()]
 
         cap = QLabel(f"{len(rows)} stored facts — newest first. "
                      f"Nothing here is sent anywhere; it lives in "
@@ -2575,6 +3324,39 @@ class MemoryOverlay(_HudOverlay):
         cap.setFont(QFont("Courier New", 7))
         cap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         self._lay.addWidget(cap)
+
+        # Personal Companion: search + category filter.
+        filt_row = QHBoxLayout(); filt_row.setSpacing(6)
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search memories…")
+        self._search_edit.setText(self._mem_search)
+        self._search_edit.setFont(QFont("Courier New", 8))
+        self._search_edit.setStyleSheet(
+            f"QLineEdit {{ color: {C.TEXT}; background: {C.PANEL};"
+            f" border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px; }}")
+        self._search_edit.textChanged.connect(self._on_mem_search)
+        filt_row.addWidget(self._search_edit, 1)
+        self._lay.addLayout(filt_row)
+
+        from memory.memory_manager import entries_by_category as _gbc
+        _cats = sorted(_gbc().keys())
+        chip_row = QHBoxLayout(); chip_row.setSpacing(4)
+        _all = QPushButton("all")
+        _all.setCheckable(True); _all.setChecked(self._mem_cat is None)
+        _all.setCursor(Qt.CursorShape.PointingHandCursor)
+        _all.clicked.connect(lambda: self._set_mem_cat(None))
+        self._paint_mem_chip(_all)
+        chip_row.addWidget(_all)
+        for _c in _cats:
+            _b = QPushButton(_c[:10])
+            _b.setCheckable(True); _b.setChecked(self._mem_cat == _c)
+            _b.setCursor(Qt.CursorShape.PointingHandCursor)
+            _b.setToolTip(_c)
+            _b.clicked.connect(lambda _=False, _cc=_c: self._set_mem_cat(_cc))
+            self._paint_mem_chip(_b)
+            chip_row.addWidget(_b)
+        chip_row.addStretch()
+        self._lay.addLayout(chip_row)
 
         if not rows:
             empty = QLabel("Nothing stored yet.")
@@ -2607,6 +3389,21 @@ class MemoryOverlay(_HudOverlay):
                 meta.setFont(QFont("Courier New", 7))
                 meta.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
                 line.addWidget(meta)
+
+                ed = QPushButton("✎")
+                ed.setFixedSize(20, 20)
+                ed.setFont(QFont("Courier New", 8))
+                ed.setCursor(Qt.CursorShape.PointingHandCursor)
+                ed.setToolTip("Edit this")
+                ed.setStyleSheet(f"""
+                    QPushButton {{ background: transparent; color: {C.TEXT_DIM};
+                        border: 1px solid {C.BORDER}; border-radius: 3px; }}
+                    QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI}; }}
+                """)
+                ed.clicked.connect(
+                    lambda _=False, c=r["category"], k=r["key"], v=r["value"]:
+                    self._edit_entry(c, k, v))
+                line.addWidget(ed)
 
                 rm = QPushButton("✕")
                 rm.setFixedSize(20, 20)
@@ -2656,6 +3453,254 @@ class MemoryOverlay(_HudOverlay):
         # Qt is entitled to touch the sender after a slot returns; tearing it
         # down mid-emission is how a widget ends up half-alive on screen.
         QTimer.singleShot(0, self._rebuild)
+
+    def _paint_mem_chip(self, b):
+        if b.isChecked():
+            b.setStyleSheet(f"QPushButton {{ color: #000; background: {C.PRI};"
+                            f" border: none; border-radius: 8px; padding: 3px 10px;"
+                            f" font: 7pt 'Courier New'; }}")
+        else:
+            b.setStyleSheet(f"QPushButton {{ color: {C.TEXT_DIM}; background: transparent;"
+                            f" border: 1px solid {C.BORDER}; border-radius: 8px; padding: 3px 10px;"
+                            f" font: 7pt 'Courier New'; }}")
+        b.toggled.connect(lambda _c, _b=b: self._paint_mem_chip(_b))
+
+    def _on_mem_search(self, text):
+        self._mem_search = text
+        QTimer.singleShot(300, self._rebuild)
+
+    def _set_mem_cat(self, cat):
+        self._mem_cat = cat
+        QTimer.singleShot(0, self._rebuild)
+
+    def _edit_entry(self, category: str, key: str, current: str):
+        from PyQt6.QtWidgets import QInputDialog
+        from memory.memory_manager import edit_entry
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Edit memory", f"{category}/{key}:", current)
+        if ok and text.strip() and text.strip() != current:
+            edit_entry(key, text.strip(), category)
+            QTimer.singleShot(0, self._rebuild)
+
+
+class BackupOverlay(_HudOverlay):
+    """Backup & Restore — Personal Companion, Phase 6.
+
+    Dedicated settings section for creating, inspecting, verifying and
+    restoring versioned backups. All controls perform real operations via
+    core/backup.py. Credentials are never included in backups.
+    """
+
+    _OW = 600
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            BackupOverlay {{
+                background: rgba(0, 8, 12, 248);
+                border: 1px solid {C.BORDER_B}; border-radius: 8px;
+            }}
+            QLabel {{ color: {C.TEXT}; background: transparent; }}
+        """)
+        self.setFixedWidth(self._OW)
+        self._status = ""
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(24, 20, 24, 20)
+        self._lay.setSpacing(10)
+        self._rebuild()
+
+    def _clear(self):
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+            lay = item.layout()
+            if lay is not None:
+                while lay.count():
+                    sub = lay.takeAt(0)
+                    sw = sub.widget()
+                    if sw is not None:
+                        sw.deleteLater()
+
+    def _btn(self, text, tip=""):
+        b = QPushButton(text)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setToolTip(tip)
+        b.setStyleSheet(f"""
+            QPushButton {{ color: {C.TEXT}; background: {C.PANEL};
+                          border: 1px solid {C.BORDER}; border-radius: 4px;
+                          padding: 7px 12px; }}
+            QPushButton:hover {{ border-color: {C.PRI}; color: {C.PRI}; }}
+        """)
+        return b
+
+    def _rebuild(self):
+        self._clear()
+
+        hdr = QLabel("💾  BACKUP & RESTORE")
+        hdr.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
+        hdr.setStyleSheet(f"color: {C.PRI};")
+        self._lay.addWidget(hdr)
+
+        note = QLabel(
+            "Backups hold your profile, memories and preferences — "
+            "never API keys or passwords. Store a copy on an external drive "
+            "or cloud folder; a backup on the same disk does not survive "
+            "disk failure.")
+        note.setWordWrap(True)
+        note.setFont(QFont("Courier New", 8))
+        note.setStyleSheet(f"color: {C.TEXT_DIM};")
+        self._lay.addWidget(note)
+
+        row = QHBoxLayout(); row.setSpacing(8)
+        for kind, label in (("full", "Full backup"),
+                            ("memory", "Memory only"),
+                            ("profile", "Profile only")):
+            b = self._btn(label, f"Create a {kind} backup now")
+            b.clicked.connect(lambda _=False, k=kind: self._do_backup(k))
+            row.addWidget(b)
+        row.addStretch()
+        self._lay.addLayout(row)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER};")
+        self._lay.addWidget(sep)
+
+        from core import backup as _bk
+        items = _bk.list_backups()
+        if not items:
+            empty = QLabel("No backups yet.")
+            empty.setFont(QFont("Courier New", 9))
+            empty.setStyleSheet(f"color: {C.TEXT_MED};")
+            self._lay.addWidget(empty)
+        else:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFixedHeight(min(300, 46 * len(items) + 10))
+            scroll.setStyleSheet(
+                f"QScrollArea {{ border: 1px solid {C.BORDER}; "
+                f"border-radius: 3px; background: transparent; }}")
+            inner = QWidget()
+            ilay = QVBoxLayout(inner)
+            ilay.setContentsMargins(6, 6, 6, 6)
+            ilay.setSpacing(6)
+            for it in items:
+                line = QHBoxLayout(); line.setSpacing(6)
+                status = "✓" if it["ok"] else "✕"
+                col = C.GREEN if it["ok"] else C.RED
+                lab = QLabel(
+                    f"<span style='color:{col}'><b>{status}</b></span> "
+                    f"<b>{it['kind']}</b> · {it['created_at']} · "
+                    f"{it['size'] // 1024} KB")
+                lab.setFont(QFont("Courier New", 8))
+                line.addWidget(lab, 1)
+
+                insp = self._btn("Inspect")
+                insp.setFixedHeight(24)
+                insp.clicked.connect(
+                    lambda _=False, p=it["path"]: self._inspect(p))
+                line.addWidget(insp)
+                mrg = self._btn("Merge")
+                mrg.setFixedHeight(24)
+                mrg.setToolTip("Add backup data; existing records win conflicts")
+                mrg.clicked.connect(
+                    lambda _=False, p=it["path"]: self._restore(p, "merge"))
+                line.addWidget(mrg)
+                rep = self._btn("Replace…")
+                rep.setFixedHeight(24)
+                rep.setToolTip("Replace current data (safety backup taken first)")
+                rep.clicked.connect(
+                    lambda _=False, p=it["path"]: self._restore(p, "replace"))
+                line.addWidget(rep)
+
+                holder = QWidget()
+                holder.setLayout(line)
+                ilay.addWidget(holder)
+            ilay.addStretch()
+            scroll.setWidget(inner)
+            self._lay.addWidget(scroll)
+
+        if self._status:
+            st = QLabel(self._status)
+            st.setWordWrap(True)
+            st.setFont(QFont("Courier New", 8))
+            st.setStyleSheet(f"color: {C.AMBER};")
+            self._lay.addWidget(st)
+
+        close = QPushButton("CLOSE")
+        close.setFixedHeight(30)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 3px; }}
+            QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
+        """)
+        close.clicked.connect(self.hide)
+        self._lay.addWidget(close)
+        self.adjustSize()
+
+    def _say(self, text):
+        self._status = text
+        self._rebuild()
+
+    def _do_backup(self, kind):
+        from core import backup as _bk
+        r = _bk.create_backup(kind=kind)
+        if r["ok"]:
+            import os
+            self._say(f"✓ {kind} backup created:\n{os.path.basename(r['path'])}")
+        else:
+            self._say(f"✕ backup failed: {r['error']}")
+
+    def _inspect(self, path):
+        from core import backup as _bk
+        from PyQt6.QtWidgets import QInputDialog
+        info = _bk.inspect_backup(path)
+        m = info.get("manifest") or {}
+        lines = [
+            f"Kind: {m.get('kind', '?')}",
+            f"Created: {m.get('created_at', '?')}",
+            f"Schema: v{m.get('backup_schema_version', '?')}",
+            f"Integrity: {'OK' if info['ok'] else 'PROBLEMS'}",
+        ]
+        for f, c in (m.get("record_counts") or {}).items():
+            lines.append(f"  {f}: {c} records")
+        for prob in info.get("problems", []):
+            lines.append(f"  ! {prob}")
+        QInputDialog.getMultiLineText(
+            self, "Inspect backup", path, "\n".join(lines))
+
+    def _restore(self, path, mode):
+        from core import backup as _bk
+        if mode == "replace":
+            win = self.window()
+            if hasattr(win, "_show_confirm_banner"):
+                # Route through the app's human confirmation gate.
+                win._pending_backup_restore = (path, mode)
+                win._show_confirm_banner(
+                    "Replace all profile & memory data?",
+                    "A safety backup of your current data will be taken "
+                    "first. This cannot be undone except via that backup.")
+                self.hide()
+                return
+            # Fallback if the gate is unavailable: require explicit typed OK.
+            from PyQt6.QtWidgets import QMessageBox
+            ans = QMessageBox.question(
+                self, "Replace data?",
+                "Replace ALL current profile and memory data with this "
+                "backup? A safety backup is taken first.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        r = _bk.restore_backup(path, mode=mode,
+                               confirm_replace=(mode == "replace"))
+        if r["ok"]:
+            detail = "; ".join(f"{k}: {v}" for k, v in r["restored"].items())
+            self._say(f"✓ restore ({mode}) complete: {detail}")
+        else:
+            self._say(f"✕ restore failed: {r['error']}")
 
 
 class ClipboardPanel(QWidget):
@@ -4183,12 +5228,12 @@ class MainWindow(QMainWindow):
             pw, ph,
         )
         # Clipboard panel — bottom-center
-        if hasattr(self, '_clipboard_panel') and self._clipboard_panel.isVisible():
+        if self._safe_visible('_clipboard_panel'):
             self._position_clipboard_panel()
         # Quick drawer — reposition if open
-        if hasattr(self, '_quick_drawer') and self._quick_drawer.isVisible():
+        if self._safe_visible('_quick_drawer'):
             self._position_quick_drawer()
-        if hasattr(self, '_ctrl_drawer') and self._ctrl_drawer.isVisible():
+        if self._safe_visible('_ctrl_drawer'):
             self._position_ctrl_drawer()
         self._fit_video()
 
@@ -4560,6 +5605,14 @@ class MainWindow(QMainWindow):
         audio_btn.clicked.connect(self._open_audio_devices)
         lay.addWidget(audio_btn)
 
+        noor_btn = QPushButton("◉  NOORCORE")
+        noor_btn.setFixedHeight(26)
+        noor_btn.setFont(QFont("Courier New", 7))
+        noor_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        noor_btn.setStyleSheet(_BTN_STYLE_DIM)
+        noor_btn.clicked.connect(self._open_noorcore_panel)
+        lay.addWidget(noor_btn)
+
         mem_btn = QPushButton("🧠  MEMORY")
         mem_btn.setFixedHeight(26)
         mem_btn.setFont(QFont("Courier New", 7))
@@ -4587,6 +5640,31 @@ class MainWindow(QMainWindow):
         w.adjustSize()
         return w
 
+    def _safe_visible(self, name: str) -> bool:
+        """True if the named child widget exists, is alive, and visible.
+
+        Qt can delete C++ widgets during teardown/theme rebuilds while the
+        Python wrapper still exists - calling isVisible() on such a wrapper
+        raises RuntimeError ("wrapped C/C++ object ... has been deleted").
+        This treats a deleted widget as not visible instead of crashing.
+        """
+        w = getattr(self, name, None)
+        if w is None:
+            return False
+        try:
+            return bool(w.isVisible())
+        except RuntimeError:
+            return False
+
+    def _safe_hide(self, name: str) -> None:
+        """hide() that never crashes on a deleted C++ widget."""
+        w = getattr(self, name, None)
+        if w is None:
+            return
+        try:
+            w.hide()
+        except RuntimeError:
+            pass
     def _build_controls_drawer(self) -> QWidget:
         """The switches that get flicked every day, in their own panel."""
         w = QWidget(self.centralWidget())
@@ -4646,9 +5724,62 @@ class MainWindow(QMainWindow):
         self._apikeys_btn.setToolTip(
             "View or change the Gemini, Groq and OpenRouter API keys.")
         self._apikeys_btn.clicked.connect(self._show_setup)
+        self._onboard_btn = _row(QPushButton())
+        self._onboard_btn.setText("👤  PROFILE ONBOARDING")
+        self._onboard_btn.setStyleSheet(self._BTN_DIM)
+        self._onboard_btn.setToolTip(
+            "Reopen the first-run onboarding to review or update "
+            "your profile.")
+        self._onboard_btn.clicked.connect(self._show_onboarding)
+        self._backup_btn = _row(QPushButton())
+        self._backup_btn.setText("\U0001F4BE  BACKUP & RESTORE")
+        self._backup_btn.setStyleSheet(self._BTN_DIM)
+        self._backup_btn.setToolTip(
+            "Create, inspect and restore backups of your profile and memories.")
+        self._backup_btn.clicked.connect(self._show_backup)
+
+        # Stage F: one-click migration of plaintext keys to the OS store.
+        self._migrate_btn = _row(QPushButton())
+        self._migrate_btn.setText("🛡  MIGRATE KEYS TO SECURE STORE")
+        self._migrate_btn.setStyleSheet(self._BTN_DIM)
+        self._migrate_btn.setToolTip(
+            "Move API keys from plaintext config into Windows Credential "
+            "Manager (or the OS keyring). The old file is renamed, not deleted.")
+        self._migrate_btn.clicked.connect(self._migrate_keys)
+        self._refresh_migrate_btn()
 
         w.adjustSize()
         return w
+
+    def _refresh_migrate_btn(self):
+        """Show the migrate button only when migration is actually needed."""
+        try:
+            from core import secrets_store as _ss
+            need = _ss.needs_migration()
+            if hasattr(self, "_migrate_btn"):
+                self._migrate_btn.setVisible(bool(need))
+        except Exception:
+            pass
+
+    def _migrate_keys(self):
+        try:
+            from core import secrets_store as _ss
+            result = _ss.migrate_from_legacy()
+            done = result.get("migrated", [])
+            failed = result.get("failed", [])
+            if done and not failed:
+                self._log.append_log(
+                    f"SYS: Migrated {len(done)} key(s) to {_ss.backend_name()}. "
+                    f"Backup: {result.get('backup')}")
+            elif failed:
+                self._log.append_log(
+                    f"SYS: Migration incomplete. Failed: {', '.join(failed)}")
+            else:
+                self._log.append_log("SYS: Nothing to migrate.")
+            self._refresh_migrate_btn()
+        except Exception as e:
+            self._log.append_log(f"SYS: Migration failed: {e}")
+
 
     def _warm_wake_state(self) -> None:
         """Work out the wake-word state off the UI thread, once.
@@ -4665,7 +5796,10 @@ class MainWindow(QMainWindow):
                 self._wake_state()
             except Exception:
                 pass
-            self._wake_btns_sig.emit()
+            try:
+                self._wake_btns_sig.emit()
+            except (RuntimeError, AttributeError):
+                pass  # window torn down before warm-up finished
         threading.Thread(target=work, daemon=True, name="wake-state-warm").start()
 
     def _toggle_drawer(self, checked: bool):
@@ -4678,28 +5812,43 @@ class MainWindow(QMainWindow):
             self._quick_drawer.hide()
 
     def _toggle_controls(self, checked: bool):
+        if getattr(self, "_ctrl_drawer", None) is None:
+            # Self-heal: rebuild the drawer if it was never built or lost.
+            try:
+                self._ctrl_drawer = self._build_controls_drawer()
+                self._log.append_log("SYS: Controls drawer was missing — rebuilt.")
+            except Exception as e:
+                self._log.append_log(f"SYS: Could not build controls drawer: {e}")
+                return
         if checked:
             self._close_setup()
             self._refresh_wake_btns()   # cheap now: the state was warmed at boot
             self._position_ctrl_drawer()
-            self._ctrl_drawer.show()
-            self._ctrl_drawer.raise_()
+            try:
+                self._ctrl_drawer.show()
+                self._ctrl_drawer.raise_()
+            except (RuntimeError, AttributeError):
+                pass
         else:
-            self._ctrl_drawer.hide()
+            self._safe_hide("_ctrl_drawer")
 
     def _close_setup(self):
-        if hasattr(self, "_quick_drawer"):
-            self._quick_drawer.hide()
+        self._safe_hide("_quick_drawer")
         if hasattr(self, "_drawer_btn"):
             self._drawer_btn.setChecked(False)
 
     def _close_controls(self):
-        if hasattr(self, "_ctrl_drawer"):
-            self._ctrl_drawer.hide()
+        self._safe_hide("_ctrl_drawer")
         if hasattr(self, "_ctrl_btn"):
             self._ctrl_btn.setChecked(False)
 
     def _place_drawer(self, drawer, left: int):
+        if drawer is None:
+            return  # never built / was lost — nothing to place
+        try:
+            drawer.setFixedWidth(0)
+        except (RuntimeError, AttributeError):
+            return  # C++ widget already deleted — nothing to place
         _W = 220
         drawer.setFixedWidth(_W)
         drawer.adjustSize()
@@ -4711,14 +5860,15 @@ class MainWindow(QMainWindow):
 
     def _position_ctrl_drawer(self):
         # Under its own header button rather than under the other one's.
-        if hasattr(self, "_ctrl_drawer"):
-            left = 12
-            try:
-                left = max(12, self._ctrl_btn.mapTo(self.centralWidget(),
-                                                    QPoint(0, 0)).x() - 8)
-            except Exception:
-                pass
-            self._place_drawer(self._ctrl_drawer, left)
+        if getattr(self, "_ctrl_drawer", None) is None:
+            return
+        left = 12
+        try:
+            left = max(12, self._ctrl_btn.mapTo(self.centralWidget(),
+                                                QPoint(0, 0)).x() - 8)
+        except Exception:
+            pass
+        self._place_drawer(self._ctrl_drawer, left)
 
     def _build_input_row(self) -> QHBoxLayout:
         row = QHBoxLayout(); row.setSpacing(5)
@@ -5484,30 +6634,16 @@ class MainWindow(QMainWindow):
                             "doing. Tap to cycle the centrepiece."),
                    "core": ("◉  HUD: NOORCORE",
                             "The Living Intelligence Core — turns with the state and moves "
-                            "with your voice. Tap to cycle the centrepiece."),
-                   "3d":   ("🤖  HUD: 3D IRON MAN",
-                            "The Iron Man Mark III helmet — moves with your voice. "
-                            "Tap to cycle the centrepiece.")}
+                            "with your voice. Tap to cycle the centrepiece.")}
         label, tip = _labels.get(cur, _labels["core"])
-        if cur != "3d":
-            # If 3D can't be offered, say why right on the button.
-            try:
-                from core.avatar3d import is_3d_available, availability_reason
-                if not is_3d_available():
-                    tip += f" (3D unavailable: {availability_reason()})"
-            except Exception:
-                pass
         self._hud_btn.setText(label)
         self._hud_btn.setStyleSheet(style)
         self._hud_btn.setToolTip(tip)
 
     def _toggle_hud_style(self):
-        """Cycle the centrepiece: face -> core -> 3d -> face. All objects stay
-        in memory, so the change is instant and switching back costs nothing.
-        3d is skipped when unavailable (never a fake)."""
-        from memory.config_manager import (get_hud_style, save_hud_style,
-                                           is_3d_available)
-        order = ["face", "core"] + (["3d"] if is_3d_available() else [])
+        """Cycle the centrepiece: face -> core -> face."""
+        from memory.config_manager import get_hud_style, save_hud_style
+        order = ["face", "core"]
         cur = get_hud_style()
         want = order[(order.index(cur) + 1) % len(order)] if cur in order else "core"
         save_hud_style(want)
@@ -5517,8 +6653,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._refresh_hud_btn()
-        _names = {"face": "animated face", "core": "NoorCore",
-                  "3d": "3D Iron Man"}
+        _names = {"face": "animated face", "core": "NoorCore"}
         self._log.append_log(f"SYS: HUD switched to the {_names.get(want, want)}.")
 
     # ── Floating companion ──────────────────────────────────────────────────
@@ -5569,11 +6704,18 @@ class MainWindow(QMainWindow):
         try:
             from core.companion import CompanionWindow
             from memory.config_manager import get_theme
+            def _pending_count() -> int:
+                try:
+                    from core.omnicontrol import gateway as _gw
+                    return len(_gw.list_pending())
+                except Exception:
+                    return 0
             comp = CompanionWindow(
                 state_provider=lambda: self.hud._noor_state()
                 if hasattr(self.hud, "_noor_state") else "IDLE",
                 amp_provider=lambda: getattr(self.hud, "_last_amp", 0.0),
                 theme_provider=get_theme,
+                pending_provider=_pending_count,
             )
             comp.restore_requested.connect(self._on_companion_restore)
             comp.voice_toggled.connect(self._on_companion_voice)
@@ -5861,6 +7003,22 @@ class MainWindow(QMainWindow):
         if self.on_audio_device_change:
             self.on_audio_device_change()
 
+    # ── NoorCore panel ───────────────────────────────────────────────────────
+
+    def _open_noorcore_panel(self):
+        ov = NoorCorePanel(parent=self.centralWidget())
+        ov.changed.connect(self._on_noorcore_changed)
+        self._centre_overlay(ov)
+        self._noorcore_overlay = ov      # keep a reference so it isn't GC'd
+
+    def _on_noorcore_changed(self):
+        # Theme / motion / text-scale changed — the HUD picks them up live.
+        try:
+            if hasattr(self, "hud"):
+                self.hud.update()
+        except Exception:
+            pass
+
     # ── Memory panel ─────────────────────────────────────────────────────────
 
     def _open_memory_panel(self):
@@ -5910,6 +7068,29 @@ class MainWindow(QMainWindow):
             self._confirm_overlay = None
 
     def _on_confirm_answered(self, accepted: bool):
+        # Personal Companion: a pending backup-restore confirmation is
+        # resolved here (human finger -> restore, never the model).
+        _pbr = getattr(self, "_pending_backup_restore", None)
+        self._pending_backup_restore = None
+        if _pbr is not None:
+            _path, _mode = _pbr
+            if accepted:
+                try:
+                    from core import backup as _bk
+                    _r = _bk.restore_backup(_path, mode=_mode,
+                                            confirm_replace=True)
+                    if _r["ok"]:
+                        _d = "; ".join(f"{k}: {v}"
+                                       for k, v in _r["restored"].items())
+                        self._log.append_log(f"SYS: Backup restore ({_mode}) complete: {_d}.")
+                    else:
+                        self._log.append_log(f"SYS: Backup restore failed: {_r['error']}.")
+                except Exception as _e:
+                    self._log.append_log(f"SYS: Backup restore failed: {_e}.")
+            else:
+                self._log.append_log("SYS: Backup restore cancelled.")
+            self._hide_confirm_banner()
+            return
         # Tear the banner down first: core.confirm.resolve() may be about to
         # shut the machine down, and a live widget mid-callback is not where you
         # want to be when that happens.
@@ -6052,6 +7233,12 @@ class MainWindow(QMainWindow):
                 self._degraded_label.hide()
         except AttributeError:
             pass  # label not built yet
+        # The NoorCore mirrors degraded mode visually (desaturated dashed ring).
+        try:
+            if hasattr(self, "hud"):
+                self.hud._degraded_active = bool(active)
+        except Exception:
+            pass
 
     def _check_config(self) -> bool:
         if not API_FILE.exists(): return False
@@ -6060,6 +7247,50 @@ class MainWindow(QMainWindow):
             return bool(d.get("gemini_api_key")) and bool(d.get("os_system"))
         except Exception:
             return False
+
+    def maybe_show_onboarding(self):
+        """Show first-run onboarding once: provider configured + online +"""
+        """no completed profile. Safe to call repeatedly."""
+        if getattr(self, "_onboarding_shown", False):
+            return
+        try:
+            from core import profile as _prof
+            if _prof.get_field("onboarding_completed", False):
+                return
+            from memory.config_manager import is_configured
+            if not is_configured():
+                return
+            if _prof.get_field("onboarding_snoozed", False):
+                return
+        except Exception:
+            return
+        self._onboarding_shown = True
+        self._show_onboarding()
+
+    def _show_onboarding(self):
+        """Open the onboarding overlay (also from Settings)."""
+        ov = OnboardingOverlay(self.centralWidget())
+        cw = self.centralWidget()
+        ow, oh = 560, 620
+        ov.setGeometry(
+            (cw.width() - ow) // 2,
+            max(10, (cw.height() - oh) // 2),
+            ow, oh,
+        )
+        ov.show()
+        ov.raise_()
+
+    def _show_backup(self):
+        ov = BackupOverlay(self.centralWidget())
+        cw = self.centralWidget()
+        ow, oh = 600, 560
+        ov.setGeometry(
+            (cw.width() - ow) // 2,
+            max(10, (cw.height() - oh) // 2),
+            ow, oh,
+        )
+        ov.show()
+        ov.raise_()
 
     def _show_setup(self):
         ov = SetupOverlay(self.centralWidget())
@@ -6086,13 +7317,49 @@ class MainWindow(QMainWindow):
                 if API_FILE.exists() else {}
         except Exception:
             d = {}
-        d["gemini_api_key"] = key
+        # Stage F: secrets go to the OS credential store (Windows Credential
+        # Manager on Windows). The JSON keeps only non-secret config.
+        # Every write is verified with a read-back: a silent store failure
+        # must NEVER lose the key — failed keys fall back to the JSON file
+        # and the user is told exactly where each key landed.
+        _store = "legacy file"
+        _landed = {}
+        try:
+            from core import secrets_store as _ss
+            _wants = {"gemini_api_key": key}
+            if groq:
+                _wants["groq_api_key"] = groq
+            if or_key:
+                _wants["openrouter_api_key"] = or_key
+            for _name, _val in _wants.items():
+                _ok = False
+                try:
+                    _ok = bool(_ss.set_secret(_name, _val)) and \
+                        _ss.get_secret(_name) == _val
+                except Exception:
+                    _ok = False
+                if _ok:
+                    _landed[_name] = _ss.backend_name()
+                else:
+                    d[_name] = _val  # fallback: keep it in the JSON file
+                    _landed[_name] = "api_keys.json (store write failed)"
+            _store = _ss.backend_name()
+        except Exception:
+            d["gemini_api_key"] = key
+            if groq:
+                d["groq_api_key"] = groq
+            if or_key:
+                d["openrouter_api_key"] = or_key
+            _landed = {k: "api_keys.json (store unavailable)" for k in d
+                       if k.endswith("_api_key")}
         d["os_system"] = os_name
-        if groq:
-            d["groq_api_key"] = groq
-        if or_key:
-            d["openrouter_api_key"] = or_key
+        d["secret_store"] = _store
         API_FILE.write_text(json.dumps(d, indent=4), encoding="utf-8")
+        try:
+            for _n, _w in _landed.items():
+                self._log.append_log(f"SYS: Key {_n} saved to {_w}.")
+        except Exception:
+            pass
         self._ready = True
         if self._overlay:
             self._overlay.hide()

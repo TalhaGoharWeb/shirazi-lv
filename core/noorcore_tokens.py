@@ -86,6 +86,7 @@ STATE_ACCENT = {
     "AWAITING_APPROVAL": "amber",
     "ERROR":             "red",
     "OFFLINE":           "text_dim",
+    "DEGRADED":          "gold",   # honest reduced capability — warm, not alarming
 }
 CORE_STATES = tuple(STATE_ACCENT)
 
@@ -97,7 +98,7 @@ RADIUS_S, RADIUS_M, RADIUS_L = 6, 12, 18
 DUR_FAST, DUR_NORMAL, DUR_SLOW = 120, 220, 450
 
 # ── Visual modes (decision 2: coexist via style toggle) ───────────────────────
-VISUAL_MODES = ("core", "face", "3d")
+VISUAL_MODES = ("core", "face")
 DEFAULT_MODE = "core"
 
 

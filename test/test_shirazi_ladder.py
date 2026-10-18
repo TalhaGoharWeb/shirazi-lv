@@ -30,6 +30,24 @@ def test_contents_empty():
 
 
 # --- _check_status ----------------------------------------------------------
+# Isolate secrets: in-memory backend so tests never touch the
+# real OS store or disk.
+try:
+    from core import secrets_store as _ss
+    _ss.use_memory_backend()
+except Exception:
+    pass
+
+# Per-test isolation: fresh secrets for every test.
+def _reset_secrets():
+    try:
+        _ss.use_memory_backend()
+    except Exception:
+        pass
+
+
+
+
 class _Resp:
     def __init__(self, status, body=b""):
         self.status = status

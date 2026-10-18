@@ -43,8 +43,24 @@ def load_api_keys() -> dict:
         print(f"❌ Failed to load api_keys.json: {e}")
         return {}
 
+def _secret_first(name: str, legacy_key: str) -> str | None:
+    """Stage F: OS credential store first, legacy api_keys.json as fallback.
+    Never raises, never logs values."""
+    try:
+        from core.secrets_store import get_secret
+        v = get_secret(name)
+        if v:
+            return v
+    except Exception:
+        pass
+    try:
+        return load_api_keys().get(legacy_key)
+    except Exception:
+        return None
+
+
 def get_gemini_key() -> str | None:
-    return load_api_keys().get("gemini_api_key")
+    return _secret_first("gemini_api_key", "gemini_api_key")
 
 def get_response_language() -> str:
     """Shirazi-origin: pinned response language (auto/english/urdu/roman_urdu)."""
@@ -65,22 +81,32 @@ def save_response_language(lang: str) -> None:
 
 def get_groq_key() -> str | None:
     """Shirazi-origin: Groq API key for provider failover (may be None)."""
-    return load_api_keys().get("groq_api_key")
+    return _secret_first("groq_api_key", "groq_api_key")
 
 
 def get_openrouter_key() -> str | None:
     """Shirazi-origin: OpenRouter API key for provider failover (may be None)."""
-    return load_api_keys().get("openrouter_api_key")
+    return _secret_first("openrouter_api_key", "openrouter_api_key")
 
 
 def save_provider_key(provider: str, key: str) -> None:
-    """Shirazi-origin: store a non-Gemini provider key (groq/openrouter)."""
+    """Shirazi-origin: store a non-Gemini provider key (groq/openrouter).
+
+    Stage F: writes to the OS credential store first (so get_*_key finds
+    it); the legacy file is updated too for backward compatibility."""
     field = {"groq": "groq_api_key", "openrouter": "openrouter_api_key"}.get(provider)
     if not field:
         raise ValueError(f"unknown provider: {provider}")
+    val = (key or "").strip()
+    try:
+        from core.secrets_store import set_secret
+        if val:
+            set_secret(field, val)
+    except Exception:
+        pass
     ensure_config_dir()
     data = load_api_keys()
-    data[field] = (key or "").strip()
+    data[field] = val
     CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -204,7 +230,7 @@ def save_push_to_talk_enabled(enabled: bool) -> None:
     _save_flag("push_to_talk_enabled", enabled)
 
 
-HUD_STYLES = ("face", "core", "3d")
+HUD_STYLES = ("face", "core")
 
 
 def get_hud_style() -> str:
@@ -212,8 +238,6 @@ def get_hud_style() -> str:
 
     - "core": NoorCore Living Intelligence Core (default).
     - "face": the holographic head.
-    - "3d":   reserved for the 3D avatar track — valid but not implemented;
-               the HUD falls back to "core" and says so instead of faking it.
 
     Taste, not capability — face and core render in the same software painter
     and cost about the same. The choice survives a restart.
@@ -225,15 +249,6 @@ def get_hud_style() -> str:
 def save_hud_style(style: str) -> None:
     s = str(style or "").strip().lower()
     _save_flag("hud_style", s if s in HUD_STYLES else "core")
-
-
-def is_3d_available() -> bool:
-    """The 3D robot avatar is live when WebEngine + the model file exist."""
-    try:
-        from core.avatar3d import is_3d_available as _real
-        return bool(_real())
-    except Exception:
-        return False
 
 
 THEMES = ("noorcore", "classic")
@@ -427,6 +442,62 @@ def save_output_device(name: str) -> None:
 def get_plugin_enabled(plugin_name: str) -> bool:
     """Plugins are enabled by default the moment they're discovered (opt-out model)."""
     return load_api_keys().get("plugins_enabled", {}).get(plugin_name, True)
+
+
+def set_plugin_enabled(plugin_name: str, enabled: bool) -> None:
+    """Stage C: explicit enable/disable. Disabled plugins are excluded from
+    tool declarations AND execution (checked in PluginRegistry.run)."""
+    data = load_api_keys()
+    pe = data.get("plugins_enabled", {})
+    if not isinstance(pe, dict):
+        pe = {}
+    pe[str(plugin_name)] = bool(enabled)
+    _patch_config(plugins_enabled=pe)
+
+
+def get_plugin_health(plugin_name: str) -> dict:
+    """Failure counters for health monitoring. Never raises."""
+    try:
+        return dict(load_api_keys().get("plugin_health", {}).get(plugin_name, {}))
+    except Exception:
+        return {}
+
+
+def record_plugin_failure(plugin_name: str, error: str) -> dict:
+    """Stage C: track consecutive failures. Returns the updated health dict.
+    After 5 consecutive failures the plugin is auto-disabled (failure
+    isolation) — the user can re-enable it from the plugin manager."""
+    data = load_api_keys()
+    ph = data.get("plugin_health", {})
+    if not isinstance(ph, dict):
+        ph = {}
+    h = dict(ph.get(plugin_name, {}))
+    h["failures"] = int(h.get("failures", 0)) + 1
+    h["last_error"] = str(error)[:300]
+    import time as _t
+    h["last_failure_at"] = _t.time()
+    auto_disabled = False
+    if h["failures"] >= 5 and get_plugin_enabled(plugin_name):
+        set_plugin_enabled(plugin_name, False)
+        auto_disabled = True
+    h["auto_disabled"] = auto_disabled or bool(h.get("auto_disabled"))
+    ph[str(plugin_name)] = h
+    _patch_config(plugin_health=ph)
+    return h
+
+
+def record_plugin_success(plugin_name: str) -> None:
+    """Reset the failure counter on success."""
+    data = load_api_keys()
+    ph = data.get("plugin_health", {})
+    if not isinstance(ph, dict):
+        return
+    h = dict(ph.get(plugin_name, {}))
+    if h.get("failures"):
+        h["failures"] = 0
+        h["auto_disabled"] = False
+        ph[str(plugin_name)] = h
+        _patch_config(plugin_health=ph)
 
 
 # ── Per-plugin settings ("tokens" / connection details) ───────────────────────
