@@ -1,0 +1,5 @@
+name: timer
+version: 1.0.0
+description: Countdown timers and a stopwatch. When a timer fires, Shirazi surfaces it (proactive card when the server wires the notify hook).
+permissions: []
+actions: [timer_start, timer_list, timer_cancel, stopwatch_start, stopwatch_stop]

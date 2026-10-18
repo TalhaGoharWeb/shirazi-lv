@@ -1,0 +1,5 @@
+name: file_organizer
+version: 1.0.0
+description: Tidy a folder ("downloads saaf karo") — preview the plan first (never executes), then apply with the plan token. No-overwrite, dotfiles skipped, stays inside the folder.
+permissions: [files:write]
+actions: [organize_preview, organize_apply]

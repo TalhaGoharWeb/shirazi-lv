@@ -1,0 +1,5 @@
+name: build_doctor
+version: 1.0.0
+description: Build Failure Doctor — paste a failed build log, get extracted error lines, file:line references, evidence-backed root-cause hypotheses, and a reproduce-first fix checklist. No guessing beyond the log.
+permissions: []
+actions: [build_diagnose, build_fix_checklist]

@@ -1,0 +1,5 @@
+name: kb_repair
+version: 1.0.0
+description: Knowledge Base Repair — audit a JSON knowledge base for duplicate ids, missing fields, bad metadata and empty chunks; preview deterministic fixes without ever applying them. Read-only.
+permissions: [files:read]
+actions: [kb_audit, kb_fix_preview]

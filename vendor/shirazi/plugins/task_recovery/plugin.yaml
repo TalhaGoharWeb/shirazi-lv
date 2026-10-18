@@ -1,0 +1,5 @@
+name: task_recovery
+version: 1.0.0
+description: Smart Task Recovery — checkpoint a task's state to plain JSON and resume it later, verbatim. For interrupted multi-step work, restarts, and "where was I".
+permissions: [files:write]
+actions: [task_checkpoint, task_resume, task_list]

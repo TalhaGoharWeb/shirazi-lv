@@ -1,0 +1,5 @@
+name: web_research
+version: 1.0.0
+description: Cited research tracker — you gather from the web, this keeps sources, reliability flags and unverified claims in one place and compiles the report.
+permissions: [files:write]
+actions: [research_start, research_add_source, research_report]

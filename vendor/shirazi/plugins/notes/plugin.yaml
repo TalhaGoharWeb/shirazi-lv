@@ -1,0 +1,5 @@
+name: notes
+version: 1.0.0
+description: Save, list, search and delete short local notes. Notes live in your Shirazi data dir as plain JSON.
+permissions: [files:write]
+actions: [note_save, note_list, note_search, note_delete]

@@ -1,0 +1,5 @@
+name: web_bookmark
+version: 1.0.0
+description: Save and search web bookmarks (title + URL). Stored as plain JSON in your Shirazi data dir.
+permissions: [files:write]
+actions: [bookmark_save, bookmark_list, bookmark_search, bookmark_delete]
