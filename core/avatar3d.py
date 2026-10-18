@@ -6,8 +6,13 @@ drives it from the same assistant state every other visual mode uses.
 
 The helmet is a STATIC model (no rig, no animations) — motion comes from
 amp-driven sway/nod and emissive eye-glow pulsing, all following the REAL
-audio amplitude. Rim light shifts hue by state (amber = approval, red =
-error, emerald = thinking, cyan = otherwise).
+audio amplitude. One colour language covers the whole robot: the rim light,
+eye glow, hologram base ring and scanline all wash toward the assistant's
+state colour (thinking = emerald, error = red, approval = amber, …), with the
+eyes themselves tinting in the states a user actually needs to notice.
+Behaviour follows the same principles as the 2D face: the helmet sweeps side
+to side while THINKING (people look away to think), leans in while
+LISTENING, and a scanline refreshes the hologram every few seconds.
 
 Files are loaded over plain file:// with LocalContentCanAccessFileUrls enabled.
 """

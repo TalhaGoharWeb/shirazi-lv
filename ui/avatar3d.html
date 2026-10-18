@@ -46,9 +46,110 @@ rim.position.set(-3, 1.5, -2.5); scene.add(rim);
 const eyeGlow = new THREE.PointLight(0x9fd8ff, 8, 10);
 eyeGlow.position.set(0, 0.1, 1.2); scene.add(eyeGlow);
 
+// ── assistant state → colour ─────────────────────────────────────────────
+// One colour language for the whole robot: the rim light, the eye glow, the
+// hologram base and the scanline all breathe the same state colour, lerped
+// smoothly so a state change washes over the helmet instead of snapping it.
+const STATE_COLORS = {
+  IDLE: 0x38BDF8,
+  LISTENING: 0x38BDF8,
+  THINKING: 0x20D6B0,
+  SPEAKING: 0x7FDBFF,
+  EXECUTING: 0xB48CFF,
+  AWAITING_APPROVAL: 0xF2B84B,
+  ERROR: 0xFF647C,
+  OFFLINE: 0x5B6B7F,
+};
+// States that tint the EYES themselves (the first thing a user looks at).
+const EYE_TINTS = {
+  THINKING: 0x20D6B0,
+  ERROR: 0xFF647C,
+  AWAITING_APPROVAL: 0xF2B84B,
+};
+const stateColor = new THREE.Color(STATE_COLORS.IDLE); // live, lerped value
+const _targetColor = new THREE.Color(STATE_COLORS.IDLE);
+const eyeTintColor = new THREE.Color(0x20D6B0);
+const _baseEyeColor = new THREE.Color(0x9fd8ff);
+let eyeTintAmt = 0;
+
+// ── hologram base ─────────────────────────────────────────────────────────
+// The helmet floats, so it gets something to float *over*: a glowing
+// projector ring plus a soft light pool, the way a hologram emitter reads.
+// It pulses with the real audio amplitude and wears the state colour.
+function radialTexture(inner, outer) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, `rgba(255,255,255,${inner})`);
+  grad.addColorStop(0.55, `rgba(255,255,255,${(inner + outer) / 2})`);
+  grad.addColorStop(1, `rgba(255,255,255,${outer})`);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const holoGroup = new THREE.Group();
+const ringMat = new THREE.MeshBasicMaterial({
+  color: 0x38BDF8, transparent: true, opacity: 0.55,
+  side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const holoRing = new THREE.Mesh(new THREE.RingGeometry(0.64, 0.70, 72), ringMat);
+holoRing.rotation.x = -Math.PI / 2;
+const ring2Mat = ringMat.clone();
+ring2Mat.opacity = 0.28;
+// An ARC, not a full circle, so its slow spin is actually visible — the
+// "scanner" tick of the projector base.
+const holoRing2 = new THREE.Mesh(
+  new THREE.RingGeometry(0.86, 0.878, 72, 1, 0, Math.PI * 1.25), ring2Mat);
+holoRing2.rotation.x = -Math.PI / 2;
+const poolMat = new THREE.MeshBasicMaterial({
+  map: radialTexture(0.35, 0.0), transparent: true, opacity: 0.5,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+});
+poolMat.color.setHex(0x38BDF8);
+const holoPool = new THREE.Mesh(new THREE.CircleGeometry(0.62, 48), poolMat);
+holoPool.rotation.x = -Math.PI / 2;
+holoGroup.add(holoRing, holoRing2, holoPool);
+holoGroup.position.y = -1.32;
+scene.add(holoGroup);
+
+// ── scanline sweep ─────────────────────────────────────────────────────────
+// A thin band of light that drifts down the helmet every few seconds — the
+// "hologram being refreshed" read. Subtle by design: additive, low opacity,
+// and it never touches the face geometry, just passes in front of it.
+function bandTexture() {
+  const c = document.createElement('canvas');
+  c.width = 8; c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 128);
+  grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.9)');
+  grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 8, 128);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const scanMat = new THREE.MeshBasicMaterial({
+  map: bandTexture(), transparent: true, opacity: 0.0,
+  // depthTest off: the scanline washes OVER the helmet like a hologram
+  // refresh, rather than clipping into the nose.
+  blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
+  side: THREE.DoubleSide,
+});
+scanMat.color.setHex(0x38BDF8);
+const scanBand = new THREE.Mesh(new THREE.PlaneGeometry(2.5, 0.12), scanMat);
+scanBand.position.set(0, 0, 0.95);
+scene.add(scanBand);
+
 let model = null;
 let bobPhase = 0;
 let eyeMats = [];   // emissive eye/arc materials to pulse with speech
+let scanBlend = 0;  // 0..1 thinking-scan motion
+let leanBlend = 0;  // 0..1 listening lean toward the user
 window.__avatar_ready = false;
 
 new GLTFLoader().load('../assets/avatar/ironman.glb', (gltf) => {
@@ -66,14 +167,16 @@ new GLTFLoader().load('../assets/avatar/ironman.glb', (gltf) => {
   camera.lookAt(0, 0, 0);
 
   // find emissive materials (eyes / arc reactor) for the speech pulse.
-  // store their AUTHORED intensity — we pulse relative to it, never replace it.
+  // store their AUTHORED intensity AND colour — we pulse relative to them,
+  // and the state tint always blends back toward them, never replaces them.
   model.traverse((o) => {
     if (o.isMesh && o.material) {
       const mats = Array.isArray(o.material) ? o.material : [o.material];
       for (const m of mats) {
         if (m.emissive && m.emissiveMap &&
             !eyeMats.some((e) => e.mat === m)) {
-          eyeMats.push({ mat: m, base: m.emissiveIntensity || 1 });
+          eyeMats.push({ mat: m, base: m.emissiveIntensity || 1,
+                         baseColor: m.emissive.getHex() });
         }
       }
     }
@@ -143,34 +246,82 @@ window.shiraziAvatar = {
 function tick() {
   requestAnimationFrame(tick);
   const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
   const speaking = (stateName === 'SPEAKING');
   const listening = (stateName === 'LISTENING');
+  const thinking = (stateName === 'THINKING');
+  const offline = (stateName === 'OFFLINE');
   // smooth the amplitude so motion never jumps
   smoothAmp += (amp - smoothAmp) * Math.min(1, dt * 8);
+  const k = 1 - Math.exp(-dt * 4);   // frame-rate-independent blend factor
+
+  // ── state colour wash ──────────────────────────────────────────────────
+  _targetColor.setHex(STATE_COLORS[stateName] ?? STATE_COLORS.IDLE);
+  stateColor.lerp(_targetColor, k);
+  rim.color.copy(stateColor);
+  ringMat.color.copy(stateColor);
+  ring2Mat.color.copy(stateColor);
+  poolMat.color.copy(stateColor);
+  scanMat.color.copy(stateColor);
+  const tintHex = EYE_TINTS[stateName];
+  if (tintHex !== undefined) eyeTintColor.setHex(tintHex);
+  eyeTintAmt += ((tintHex !== undefined ? 1 : 0) - eyeTintAmt) * k;
+  eyeGlow.color.copy(_baseEyeColor).lerp(eyeTintColor, eyeTintAmt * 0.9);
 
   if (model) {
     // gentle heroic idle sway; speaking adds amp-driven nod energy.
     // every bit of motion comes from the REAL audio amplitude — never faked.
     const energy = speaking ? smoothAmp : (listening ? 0.15 : 0.05);
-    bobPhase += dt * (1.1 + energy * 4.0);
-    model.rotation.y = Math.sin(bobPhase * 0.32) * 0.10;
-    model.rotation.x = Math.sin(bobPhase * 0.55) * 0.03 * (1 + energy * 3);
+    bobPhase += dt * (1.1 + energy * 4.0) * (offline ? 0.15 : 1);
+
+    // thinking scan: the helmet slowly sweeps side to side, like someone
+    // searching for an answer. Blended in/out so it never snaps.
+    scanBlend += ((thinking ? 1 : 0) - scanBlend) * k;
+    const scanYaw = Math.sin(bobPhase * 1.15) * 0.42 * scanBlend;
+
+    // listening lean: tilt in toward the user, attentive. Again blended.
+    leanBlend += ((listening ? 1 : 0) - leanBlend) * k;
+
+    model.rotation.y = Math.sin(bobPhase * 0.32) * 0.10 * (1 - scanBlend)
+                       + scanYaw;
+    model.rotation.x = Math.sin(bobPhase * 0.55) * 0.03 * (1 + energy * 3)
+                       - Math.sin(bobPhase * 2.1) * 0.045 * energy
+                       + leanBlend * 0.13
+                       + (thinking ? -0.05 * scanBlend : 0);
     model.position.y = Math.sin(bobPhase) * 0.012 * (1 + energy * 2.5);
+    model.position.z = leanBlend * 0.18;
   }
+
+  // hologram base: pulses with the voice, spins its outer ring faster when
+  // the assistant is working. The pool breathes even at idle so the robot
+  // never looks switched off while it is actually awake.
+  const basePulse = 0.5 + smoothAmp * 0.5 + (offline ? -0.35 : 0);
+  ringMat.opacity = Math.max(0.08, 0.55 * basePulse);
+  ring2Mat.opacity = Math.max(0.05, 0.28 * basePulse);
+  poolMat.opacity = Math.max(0.06, 0.5 * (0.55 + smoothAmp * 0.45));
+  const ringScale = 1 + smoothAmp * 0.07;
+  holoRing.scale.setScalar(ringScale);
+  holoRing2.scale.setScalar(1 / ringScale);
+  holoRing2.rotation.z += dt * (thinking || stateName === 'EXECUTING' ? 1.4 : 0.25);
+  holoPool.scale.setScalar(1 + Math.sin(t * 2.2) * 0.03 + smoothAmp * 0.10);
+
+  // scanline sweep: one pass down the helmet every ~4.5 s, fading at the ends.
+  const cyc = (t % 4.5) / 4.5;
+  scanBand.position.y = 1.45 - cyc * 2.9;
+  scanMat.opacity = (offline ? 0.05 : 0.16) * Math.sin(cyc * Math.PI);
+
   // eye/arc glow breathes with speech intensity (real amp only),
-  // pulsing AROUND the authored intensity — never replacing it
-  const glow = 6 + smoothAmp * 14 * (speaking ? 1 : 0.25);
+  // pulsing AROUND the authored intensity — never replacing it.
+  // In tinted states the glow also takes on the tint.
+  const glow = (offline ? 1.5 : 6) + smoothAmp * 14 * (speaking ? 1 : 0.25);
   eyeGlow.intensity = glow;
   for (const e of eyeMats) {
-    try { e.mat.emissiveIntensity =
-            e.base * (0.85 + smoothAmp * 0.45 * (speaking ? 1 : 0.2)); }
-    catch (err) {}
+    try {
+      e.mat.emissiveIntensity =
+        e.base * (0.85 + smoothAmp * 0.45 * (speaking ? 1 : 0.2));
+      e.mat.emissive.setHex(e.baseColor).lerp(eyeTintColor, eyeTintAmt * 0.85);
+    } catch (err) {}
   }
-  // rim light shifts hue subtly by state
-  if (stateName === 'AWAITING_APPROVAL') rim.color.setHex(0xF2B84B);
-  else if (stateName === 'ERROR') rim.color.setHex(0xFF647C);
-  else if (stateName === 'THINKING') rim.color.setHex(0x20D6B0);
-  else rim.color.setHex(0x38BDF8);
 
   renderer.render(scene, camera);
 }
