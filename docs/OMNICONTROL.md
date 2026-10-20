@@ -1,7 +1,7 @@
 # SHIRAZI OMNICONTROL — MVP Guide
 
 Dynamic access control, MCP-based tool orchestration, and autonomous task
-execution for SHIRAZI LV. This is the **MVP** (stages 1–4 of the 9-stage plan
+execution for SHIRAZI LVI. This is the **MVP** (stages 1–4 of the 9-stage plan
 in `~/workspace/omnicontrol/OMNICONTROL_ARCHITECTURE.md`).
 
 ## What the MVP includes

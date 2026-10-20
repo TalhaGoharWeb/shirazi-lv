@@ -21,7 +21,7 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
-from core import confirm
+from core import confirm, outcome
 from core.undo import push_undo
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -245,8 +245,34 @@ def brightness_down():
             print(f"[Settings] Brightness down failed on Windows: {e}")
 
 def close_app():
-    if _OS == "Darwin": pyautogui.hotkey("command", "q")
-    else:               pyautogui.hotkey("alt", "f4")
+    """Removed. A named refusal, ported from Mark LVI.
+
+    WHAT THIS USED TO BE, AND WHY IT HAD TO GO
+
+        if _OS == "Darwin": pyautogui.hotkey("command", "q")
+        else:               pyautogui.hotkey("alt", "f4")
+
+    Two lines with no target. It sent the quit chord to WHATEVER WINDOW HAD
+    FOCUS — and while somebody is talking to the assistant, the window with
+    focus is very often the assistant. That is the whole of the bug people
+    reported as "I asked it to close an app and it closed itself".
+
+    Mark LVI redirects the model to a close-by-name action in its
+    computer_control; THIS build's computer_control has no such action, so
+    the refusal here names only what actually exists: close_window for the
+    current window. The function stays as a named refusal rather than
+    disappearing, because a model that learnt the old name will still reach
+    for it, and an "unknown action" dead end would give it nothing to act on.
+    The handler returns a string result from an ACTION_MAP function
+    verbatim, which is how this reaches the model.
+    """
+    return outcome.failed(
+        "close_app",
+        "this action does not know WHICH application to close - its old "
+        "form sent the quit shortcut to whatever window had focus, which "
+        "was often the assistant itself, so it no longer fires blind. Use "
+        "action='close_window' for the current window",
+    )
 
 def close_window():
     if _OS == "Darwin": pyautogui.hotkey("command", "w")
@@ -778,8 +804,11 @@ def _suggest(description: str) -> str:
     near = difflib.get_close_matches(_normalise(description),
                                      sorted(ACTION_MAP), n=5, cutoff=0.3)
     hint = ", ".join(near) if near else ", ".join(sorted(ACTION_MAP)[:12])
-    return (f"I could not match '{description}' to a computer action. "
-            f"Call computer_settings again with an exact `action` from: {hint}.")
+    return outcome.ask(
+        "computer_settings",
+        f"'{description}' does not match any computer action - the closest "
+        f"are: {hint}. Which was meant?",
+        said=description)
 
 def computer_settings(
     parameters: dict = None,
@@ -886,10 +915,17 @@ def computer_settings(
         _before = ("brightness", brightness_get())
 
     try:
-        func()
+        result = func()
     except Exception as e:
         print(f"[Settings] Action failed ({action}): {e}")
-        return f"Action failed ({action}): {e}"
+        return outcome.failed("computer_settings", f"it failed: {e}",
+                              wanted=action)
+
+    # An ACTION_MAP function may answer for itself by returning a string —
+    # close_app() does: it is a named refusal, not a keystroke. Everything
+    # else in the map returns None and falls through to the reporting below.
+    if isinstance(result, str):
+        return result
 
     if _before:
         kind, old = _before
@@ -905,7 +941,37 @@ def computer_settings(
         push_undo("dark mode toggled",
                   lambda: (dark_mode(), "Theme switched back.")[1])
 
-    return f"Done: {action}."
+    # ── Say what is known, and only that ─────────────────────────────────────
+    # Ported from Mark LVI. This used to be `return f"Done: {action}."`, sent
+    # whether or not anything had changed, because func() returns nothing and
+    # nobody looked.
+    #
+    # Volume and brightness are a state the machine will read back, and the
+    # "before" value has ALREADY been read above for undo — so checking costs
+    # one more call and turns a claim into a fact. Most other actions are a
+    # keystroke sent to whatever has focus (close_window among them), and
+    # there is nothing to read back; but the user is looking straight at the
+    # result, so reporting the keystroke as done is claiming only what was
+    # actually done — not an outcome that was never observed.
+    if _before:
+        kind, old_value = _before
+        now = volume_get() if kind == "volume" else brightness_get()
+        if old_value is None or now is None:
+            return outcome.unverified(
+                "computer_settings",
+                f"this system does not report its {kind}, so the change could "
+                f"not be read back",
+                wanted=action)
+        if now == old_value:
+            return outcome.unverified(
+                "computer_settings",
+                f"the {kind} still reads {now}% - it may already have been at "
+                f"the limit, or this system may not have accepted the change",
+                wanted=action, value=now)
+        return outcome.done("computer_settings", wanted=action,
+                            **{kind: now}, verified=True)
+
+    return outcome.done("computer_settings", wanted=action)
 
 
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────

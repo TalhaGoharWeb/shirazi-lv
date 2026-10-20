@@ -30,7 +30,8 @@ import random
 
 import numpy as np
 from PyQt6.QtCore import QLineF, QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF, QRadialGradient
+from PyQt6.QtGui import (QBrush, QColor, QLinearGradient, QPainter, QPen,
+                       QPolygonF, QRadialGradient)
 
 from core.avatar_mesh import JAW_MAX, JAW_PIVOT, get_head_mesh
 
@@ -144,6 +145,9 @@ class HoloAvatar:
         # keeps an open mouth from reading as a hole punched in the face.
         lips_in = mesh["landmarks"]["lips_in"]
         self._lip_up = np.concatenate([lips_in[10:], lips_in[:1]])
+        # The lower arc anchors the lower teeth, drawn when the jaw drops far
+        # enough that upper teeth alone would leave a dark slot.
+        self._lip_lo = np.asarray(lips_in[:11])
 
         # Crown (+1.0) down to the bottom of the neck, in head-half-heights.
         # Callers size the head to the room they have with this.
@@ -511,6 +515,25 @@ class HoloAvatar:
         self._paint_wire(p, xs, ys, norms, verts, primary, bg, amp)
         self._paint_features(p, xs, ys, norms, r, primary, accent, bg, amp)
 
+        # ── scan band ───────────────────────────────────────────────────────
+        # The energy sweep made visible: a soft band of light drifting down the
+        # head — the "hologram refreshing" read. It is the same _scan value that
+        # already brightens the wireframe, so the two can never disagree.
+        if -1.6 <= self._scan <= 1.4:
+            sby = cy - self._scan * r
+            bh = r * 0.16
+            p.save()
+            p.setClipRect(QRectF(cx - r * 1.25, cy - r * 1.45,
+                                 r * 2.5, r * 2.9))
+            grad = QLinearGradient(0.0, sby - bh, 0.0, sby + bh)
+            grad.setColorAt(0.0, _c(primary, 0))
+            grad.setColorAt(0.5, _c(primary, 34 + 46 * amp))
+            grad.setColorAt(1.0, _c(primary, 0))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(grad))
+            p.drawRect(QRectF(cx - r * 1.25, sby - bh, r * 2.5, bh * 2.0))
+            p.restore()
+
     def _paint_surface(self, p: QPainter, xs, ys, norms, verts,
                        primary: QColor, bg: QColor, amp: float) -> None:
         """Fill the camera-facing triangles so the head reads as a lit volume."""
@@ -683,7 +706,21 @@ class HoloAvatar:
             p.drawPolyline(self._ring(xs, ys, idx))
 
         # ── mouth ───────────────────────────────────────────────────────────
-        inner = self._ring(xs, ys, lm["lips_in"])
+        # The expression channel reaches the mouth as well as the brows: a
+        # positive expression lifts the corners (a smile), a negative one lets
+        # them fall. Corners are positions 0 and 10 in both MediaPipe lip rings;
+        # their neighbours ride at half weight so the lip stays one curve.
+        _lift = max(-1.0, min(1.0, self._expr)) * 0.035 * r
+
+        def _smiled(idx):
+            poly = self._ring(xs, ys, idx)
+            for ci, w in ((0, 1.0), (1, 0.5), (19, 0.5),
+                          (10, 1.0), (9, 0.5), (11, 0.5)):
+                pt = poly[ci]
+                poly[ci] = QPointF(pt.x(), pt.y() - _lift * w)
+            return poly
+
+        inner = _smiled(lm["lips_in"])
         open_h = inner.boundingRect().height()
 
         p.setPen(Qt.PenStyle.NoPen)
@@ -704,6 +741,19 @@ class HoloAvatar:
             p.setBrush(QBrush(_blend(bg, primary, 150 + 60 * self._mouth)))
             p.drawPolygon(QPolygonF(pts))
 
+            # Lower teeth: a shorter strip rising from the lower lip, shown once
+            # the jaw drops far enough that the upper strip alone would leave a
+            # dark slot. The pair is what makes a wide-open mouth read as
+            # speech rather than a hole.
+            if self._mouth > 0.30:
+                lx, ly = xs[self._lip_lo], ys[self._lip_lo]
+                th2 = open_h * 0.24
+                lpts = [QPointF(float(x), float(y)) for x, y in zip(lx, ly)]
+                lpts += [QPointF(float(x), float(y) - th2)
+                         for x, y in zip(lx[::-1], ly[::-1])]
+                p.setBrush(QBrush(_blend(bg, primary, 120 + 50 * self._mouth)))
+                p.drawPolygon(QPolygonF(lpts))
+
             # A warm pool at the back of the throat, strongest when wide open.
             p.setBrush(QBrush(_c(accent, 40 * self._mouth * face)))
             p.drawPolygon(inner)
@@ -712,4 +762,4 @@ class HoloAvatar:
         p.setPen(QPen(_c(primary, (150 + 70 * self._mouth) * face), 1.3))
         p.drawPolygon(inner)                       # lip edge
         p.setPen(QPen(_c(primary, 110 * face), 1.1))
-        p.drawPolygon(self._ring(xs, ys, lm["lips_out"]))
+        p.drawPolygon(_smiled(lm["lips_out"]))

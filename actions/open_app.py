@@ -11,6 +11,8 @@ except ImportError:
 
 _SYSTEM = platform.system()
 
+from core import outcome
+
 _APP_ALIASES: dict[str, dict[str, str]] = {
 
     "chrome":             {"Windows": "chrome",                  "Darwin": "Google Chrome",        "Linux": "google-chrome"},
@@ -237,6 +239,65 @@ _OS_LAUNCHERS = {
     "Linux":   _launch_linux,
 }
 
+# ── Did it actually open? ────────────────────────────────────────────────────
+# Ported pattern from Mark LVI (there it is core/appidentity + a background
+# thread; here it is the same idea in the small, against the psutil this file
+# already imports). A launcher returning True proves a request was accepted —
+# a shell started, a name was typed into the Start Menu — not that an
+# application exists. The application is open when its process does, so the
+# result is read off the process table before anyone says "opened".
+
+_VERIFY_TIMEOUT = 6.0   # seconds to wait for a launched process to appear
+
+# Launch names whose process answers to a different name.
+_PROCESS_ALIASES: dict[str, set[str]] = {
+    "ms-settings:": {"systemsettings"},
+    "wt":           {"windowsterminal"},
+    "calc":         {"calculatorapp"},
+}
+
+
+def _stem(name: str) -> str:
+    """'Chrome.exe' / 'chrome' -> 'chrome'."""
+    base = name.strip().lower()
+    return base[:-4] if base.endswith(".exe") else base
+
+
+def _target_stems(*raw_names: str) -> set[str]:
+    """Process-name stems a launch target can appear under. A launch command
+    may carry arguments ('libreoffice --writer'), so its first token counts
+    as well as the whole string."""
+    stems: set[str] = set()
+    for raw in raw_names:
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        for candidate in (raw, raw.split()[0]):
+            s = _stem(candidate)
+            if s:
+                stems.add(s)
+                stems |= _PROCESS_ALIASES.get(s, set())
+    return stems
+
+
+def _process_stems() -> set[str]:
+    """Stems of the executable names of everything running right now."""
+    stems: set[str] = set()
+    if not _PSUTIL:
+        return stems
+    try:
+        for proc in psutil.process_iter(["name"]):
+            try:
+                name = proc.info.get("name") or ""
+            except Exception:
+                continue
+            if name:
+                stems.add(_stem(name))
+    except Exception:
+        pass
+    return stems
+
+
 def open_app(
     parameters=None,
     response=None,
@@ -246,11 +307,14 @@ def open_app(
     app_name = (parameters or {}).get("app_name", "").strip()
 
     if not app_name:
-        return "No application name provided."
+        return outcome.failed("open_app", "no application name was given")
 
     launcher = _OS_LAUNCHERS.get(_SYSTEM)
     if launcher is None:
-        return f"Unsupported operating system: {_SYSTEM}"
+        return outcome.failed(
+            "open_app", f"this operating system ({_SYSTEM}) is not supported",
+            app=app_name,
+        )
 
     normalized = _normalize(app_name)
     print(f"[open_app] Launching: '{app_name}' → '{normalized}' ({_SYSTEM})")
@@ -258,25 +322,58 @@ def open_app(
     if player:
         player.write_log(f"[open_app] {app_name}")
 
+    targets = _target_stems(normalized, app_name)
+    already_running = bool(targets & _process_stems())
+
     try:
-        if launcher(normalized):
-            return f"Opened {app_name}."
-        if normalized.lower() != app_name.lower():
-            if launcher(app_name):
-                return f"Opened {app_name}."
-        return (
-            f"Could not confirm that {app_name} launched. "
-            f"It may still be loading, or it might not be installed."
-        )
+        launched = bool(launcher(normalized))
+        if not launched and normalized.lower() != app_name.lower():
+            launched = bool(launcher(app_name))
     except Exception as e:
         print(f"[open_app] Error: {e}")
-        return f"Failed to open {app_name}: {e}"
+        return outcome.failed("open_app", f"opening it failed: {e}",
+                              app=app_name)
+
+    if not launched:
+        return outcome.failed(
+            "open_app",
+            "nothing on this system answered to that name, so it may not "
+            "be installed",
+            app=app_name,
+        )
+
+    # The launcher returning True only proves the request was accepted. The
+    # application is open when its process exists — look before saying so.
+    # (Mark LVI does this on a background thread and answers `started`; this
+    # build has no wired channel for the follow-up report that `started`
+    # obliges, so the check happens here, briefly, instead.)
+    if already_running:
+        return outcome.done("open_app", app=app_name, matched=normalized,
+                            already_running=True, verified=True)
+    if not _PSUTIL:
+        return outcome.unverified(
+            "open_app",
+            "the launch was requested but the result could not be checked "
+            "(psutil is not installed)",
+            app=app_name)
+    deadline = time.time() + _VERIFY_TIMEOUT
+    while time.time() < deadline:
+        if targets & _process_stems():
+            return outcome.done("open_app", app=app_name, matched=normalized,
+                                verified=True)
+        time.sleep(0.4)
+    return outcome.unverified(
+        "open_app",
+        f"it was asked to start but no matching process appeared within "
+        f"{int(_VERIFY_TIMEOUT)} seconds - it may be slow to load, or not "
+        f"installed under that name",
+        app=app_name)
 
 
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "open_app",
-    "description": "Opens any application on the computer. Use this whenever the user asks to open, launch, or start any app, website, or program. Always call this tool — never just say you opened it.",
+    "description": "Opens any application on the computer. Use this whenever the user asks to open, launch, or start any app, website, or program. Always call this tool — never just say you opened it. The result is a status line: report the app as open only on status=done; on status=unverified say plainly that you asked and cannot confirm it.",
     "parameters": {
         "type": "OBJECT",
         "properties": {

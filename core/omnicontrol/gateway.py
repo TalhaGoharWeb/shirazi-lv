@@ -77,6 +77,15 @@ TOOL_RISK_MAP: dict[str, str] = {
     "shirazi_research_start": policy.MODERATE,
     "shirazi_build_fix_checklist": policy.MODERATE,
     "shirazi_problem_plan": policy.MODERATE,
+    # — plugins: MODERATE (LVI wave — MYRA-learned tools that create files,
+    #   write local data or drive another app's playback state) —
+    "shirazi_spotify": policy.MODERATE,
+    "shirazi_qr": policy.MODERATE,
+    "shirazi_ppt_create": policy.MODERATE,
+    "shirazi_website": policy.MODERATE,
+    "shirazi_expense": policy.MODERATE,
+    # — plugins: LOW (read-only scans) —
+    "shirazi_duplicates": policy.LOW,
     # — actions: HIGH (system control / code exec / file writes) —
     "computer_control": policy.HIGH,
     "computer_settings": policy.HIGH,

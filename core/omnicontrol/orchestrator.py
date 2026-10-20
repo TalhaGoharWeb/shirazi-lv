@@ -53,58 +53,6 @@ def _set_state(tid: str, state: str, result: dict | None = None) -> None:
     audit.log("orchestrator", "task-state", resource=tid, decision=state)
 
 
-def _set_progress(tid: str, steps_done: int, steps_total: int) -> None:
-    """Record live step progress without changing state. The HUD reads this
-    to drive the NoorCore EXECUTING progress arc with REAL numbers."""
-    conn = db.connect()
-    row = conn.execute("SELECT result_json FROM tasks WHERE id=?",
-                       (tid,)).fetchone()
-    try:
-        cur = json.loads(row["result_json"]) if row and row["result_json"] else {}
-    except Exception:
-        cur = {}
-    cur["steps_done"] = steps_done
-    cur["steps_total"] = steps_total
-    conn.execute("UPDATE tasks SET updated_at=?, result_json=? WHERE id=?",
-                 (db.now(), json.dumps(cur, default=str), tid))
-    conn.commit()
-
-
-def task_progress(tid: str) -> float | None:
-    """0..1 progress of a running task from REAL step counts, or None when
-    the plan has no countable steps. Never raises; never invents numbers."""
-    try:
-        row = _row(tid)
-        if not row:
-            return None
-        plan = json.loads(row["plan_json"] or "[]")
-        total = len(plan)
-        if total == 0:
-            return None
-        try:
-            res = json.loads(row["result_json"] or "{}")
-        except Exception:
-            res = {}
-        done = int(res.get("steps_done", 0))
-        return max(0.0, min(1.0, done / total))
-    except Exception:
-        return None
-
-
-def active_task_progress() -> float | None:
-    """Progress of the most recently updated RUNNING task, or None."""
-    try:
-        conn = db.connect()
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE state='RUNNING'"
-            " ORDER BY updated_at DESC LIMIT 1").fetchone()
-        if not row:
-            return None
-        return task_progress(row["id"])
-    except Exception:
-        return None
-
-
 def start(title: str, workspace: str, plan: list[dict]) -> str:
     """
     Create a task. plan = [{'tool':..., 'resource':..., 'op':..., 'params':...,
@@ -210,7 +158,6 @@ def run(tid: str, approval_token: str | None = None) -> dict:
                    "changed": {p: (before.get(p),
                                    _snapshot([p]).get(p)) for p in before}}
         evidence.append(step_ev)
-        _set_progress(tid, i + 1, len(plan))  # real numbers for the HUD core
 
         if not res["ok"]:
             # One retry with fresh diagnostics is NOT new evidence; fail

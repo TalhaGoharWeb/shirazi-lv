@@ -13,7 +13,10 @@ Two things it deliberately does NOT install:
     PyQt6 and numpy already listed here. No GPU, no OpenGL, no extra packages.
 
 Usage:
-  python setup.py          # install (requirements.txt)
+  python setup.py          # full install (requirements.txt, incl. WebEngine)
+  python setup.py --base   # base install (requirements-base.txt — no
+                           # PyQt6-WebEngine, so the 3D Iron Man avatar is
+                           # unavailable; everything else works)
 """
 import platform
 import subprocess
@@ -70,9 +73,11 @@ def _check_assets() -> None:
 
 
 def main() -> None:
-    req_file = "requirements.txt"
-    print(f"⚙  SHIRAZI LV setup — detected OS: {OS or 'unknown'}, "
-          f"Python {sys.version_info[0]}.{sys.version_info[1]}")
+    base_only = "--base" in sys.argv[1:]
+    req_file = "requirements-base.txt" if base_only else "requirements.txt"
+    print(f"⚙  MARK LIV setup — detected OS: {OS or 'unknown'}, "
+          f"Python {sys.version_info[0]}.{sys.version_info[1]}"
+          f"{' (BASE install — no PyQt6-WebEngine / 3D avatar)' if base_only else ''}")
     _check_python()
 
     # requirements.txt filters OS-specific extras by itself via pip markers.
@@ -124,6 +129,10 @@ def main() -> None:
         )
 
     print("\n✅ Setup complete!")
+    if base_only:
+        print("   (BASE install: the 3D Iron Man avatar is unavailable — the")
+        print('    HUD "3d" style falls back to NoorCore/Core. Add it later with:')
+        print('      python -m pip install "PyQt6-WebEngine>=6.6,<7")')
     print("   1) Launch it:  python main.py")
     print("   2) Paste your free Gemini API key when the setup screen appears.")
     print("   3) (Optional) Enable 'Hey Shirazi' from ⚙ → WAKE WORD.")
