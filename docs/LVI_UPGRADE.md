@@ -72,6 +72,29 @@ confirmation-free WhatsApp sending — both clash with OmniControl.
   MYRA's floating orb was NOT ported: Shirazi's floating NoorCore
   companion already fills that role.
 
+## HUD replacement (later the same day, at the user's explicit direction)
+
+The transplant above was not what the user wanted — they directed the
+whole window replaced. Done:
+
+- **`ui.py` is now Mark LVI's `ui.py`**, wholesale. Shirazi-side changes
+  are limited to: SHIRAZI branding on user-visible defaults/labels, a
+  `set_degraded_mode` compat method (logs; LVI has no degraded banner),
+  the `on_close_request` ordered-shutdown hook in MainWindow.closeEvent
+  (main.py sets it), the MYRA edge-glow wiring, and a `ShiraziUI =
+  JarvisUI` alias. main.py's full 31-name UI contract was verified
+  against the new window before and after.
+- **The Iron Man 3D avatar is removed completely**: `core/avatar3d.py`,
+  `ui/avatar3d.html`, `ui/three/`, the config `"3d"` HUD style,
+  `is_3d_available()`, and its tests are all deleted.
+- Retired with the old HUD: the NoorCore canvas and the floating
+  companion's window wiring (`core/noorcore.py` / `core/companion.py`
+  remain on disk, unwired, with their module tests). Shirazi-only HUD
+  entry points (kids-mode and dashboard buttons) went with the old
+  drawers; the underlying tools/plugins are unchanged.
+- The edge glow survived the swap: its toggle lives in LVI's CONTROLS
+  drawer, fed by the LVI canvas state (+ gateway approval check).
+
 ## Follow-ups worth doing
 
 1. ~~Settings panel for providers~~ — **done** (HUD wave above). Next:

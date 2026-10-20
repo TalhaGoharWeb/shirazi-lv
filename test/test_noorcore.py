@@ -137,15 +137,6 @@ class Themes(unittest.TestCase):
 
 
 class StyleToggle(unittest.TestCase):
-    def test_hud_styles(self):
-        from memory import config_manager as cm
-        from core.avatar3d import is_3d_available as real
-        self.assertIn("core", cm.HUD_STYLES)
-        self.assertIn("face", cm.HUD_STYLES)
-        self.assertIn("3d", cm.HUD_STYLES)
-        # 3d availability is honest: True only when WebEngine + model exist
-        self.assertEqual(cm.is_3d_available(), real())
-
     def test_default_is_core(self):
         from memory import config_manager as cm
         d = cm.load_api_keys()

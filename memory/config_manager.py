@@ -204,16 +204,14 @@ def save_push_to_talk_enabled(enabled: bool) -> None:
     _save_flag("push_to_talk_enabled", enabled)
 
 
-HUD_STYLES = ("face", "core", "3d")
+HUD_STYLES = ("face", "core")
 
 
 def get_hud_style() -> str:
     """Which centrepiece the HUD draws.
 
-    - "core": NoorCore Living Intelligence Core (default).
+    - "core": the reactor core (default).
     - "face": the holographic head.
-    - "3d":   reserved for the 3D avatar track — valid but not implemented;
-               the HUD falls back to "core" and says so instead of faking it.
 
     Taste, not capability — face and core render in the same software painter
     and cost about the same. The choice survives a restart.
@@ -225,15 +223,6 @@ def get_hud_style() -> str:
 def save_hud_style(style: str) -> None:
     s = str(style or "").strip().lower()
     _save_flag("hud_style", s if s in HUD_STYLES else "core")
-
-
-def is_3d_available() -> bool:
-    """The 3D robot avatar is live when WebEngine + the model file exist."""
-    try:
-        from core.avatar3d import is_3d_available as _real
-        return bool(_real())
-    except Exception:
-        return False
 
 
 THEMES = ("noorcore", "classic")

@@ -39,7 +39,7 @@ from PyQt6.QtGui import (
 # Video playback for the HUD. Part of PyQt6, so it costs no new dependency —
 # but the multimedia plugins are a separate piece of the Qt install and can be
 # absent on a stripped-down system, so a failure here disables one feature
-# rather than stopping SHIRAZI from starting.
+# rather than stopping JARVIS from starting.
 try:
     from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
     from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
@@ -53,31 +53,13 @@ from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QGraphicsScene, QGraphicsView,
-    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
+    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar, QSlider,
 )
-
-# 3D Iron Man avatar: QtWebEngineWidgets MUST be imported before the
-# QCoreApplication/QApplication instance exists, or the import fails and the
-# 3D mode is silently skipped. ui.py is imported by main.py before the app is
-# created, so this is the safe place. A failure here only disables 3D.
-try:
-    from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
-    HAVE_WEBENGINE = True
-except Exception as _e:            # noqa: BLE001 - reported, never fatal
-    HAVE_WEBENGINE = False
-    print(f"[3D] PyQt6-WebEngine import failed ({_e}) — 3D Iron Man unavailable.")
 
 try:
     from core.avatar import HoloAvatar
 except Exception:      # pragma: no cover — HUD must never die over cosmetics
     HoloAvatar = None
-
-try:
-    from core.noorcore import NoorCore
-    from core import noorcore_tokens as _NT
-except Exception:      # pragma: no cover — HUD must never die over cosmetics
-    NoorCore = None
-    _NT = None
 
 
 def _base_dir() -> Path:
@@ -100,7 +82,7 @@ def _read_full_config() -> dict:
 
 # Single source of truth for the release name — the window title, the header
 # badge and the readme must never disagree again.
-APP_VERSION  = "SHIRAZI"
+APP_VERSION  = "MARK LVI"
 APP_PROTOCOL = APP_VERSION.split()[-1]
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
@@ -339,12 +321,7 @@ class _SysMetrics:
         if self._pynvml_ok is not False:
             try:
                 if self._pynvml_h is None:
-                    import warnings
-                    with warnings.catch_warnings():
-                        # pynvml is deprecated upstream in favour of nvidia-ml-py
-                        # (same import name); silence the notice — GPU meter only.
-                        warnings.simplefilter("ignore", FutureWarning)
-                        import pynvml  # type: ignore
+                    import pynvml  # type: ignore
                     pynvml.nvmlInit()
                     self._pynvml    = pynvml
                     self._pynvml_h  = pynvml.nvmlDeviceGetHandleByIndex(0)
@@ -438,7 +415,7 @@ class HudCanvas(QWidget):
         self._assistant_name = assistant_name
 
         # The holographic head that fills the HUD. If it could not be imported
-        # we fall back to the NoorCore intelligence core so the panel is never empty.
+        # we fall back to the old glowing core so the panel is never empty.
         self._avatar = None
         if HoloAvatar is not None:
             try:
@@ -446,52 +423,14 @@ class HudCanvas(QWidget):
             except Exception:
                 self._avatar = None
 
-        # 3D avatar — real robot GLB in a WebEngine view (child of the canvas).
-        # Only live when the model file + WebEngine both exist; otherwise the
-        # NoorCore Living Intelligence Core — the default centrepiece.
-        self._noor = None
-        self._noor_error = False
-        self._noor_offline = False
-        if NoorCore is not None:
-            try:
-                self._noor = NoorCore()
-            except Exception:
-                self._noor = None
-
-        # 3D avatar — real robot GLB in a WebEngine view (child of the canvas).
-        # Only live when the model file + WebEngine both exist; otherwise the
-        # "3d" style is reported unavailable and never faked.
-        self._avatar3d = None
-        self._avatar3d_ok = False
-        try:
-            from core.avatar3d import Avatar3D, is_3d_available, availability_reason
-            if is_3d_available():
-                self._avatar3d = Avatar3D(
-                    self, log=lambda m: print(m, flush=True))
-                self._avatar3d_ok = self._avatar3d.available()
-                if self._avatar3d_ok and self._avatar3d.widget is not None:
-                    self._avatar3d.widget.hide()
-            else:
-                print(f"[3D] {availability_reason()}", flush=True)
-        except Exception:
-            self._avatar3d = None
-            self._avatar3d_ok = False
-
         # Which centrepiece to draw. Read once here and changed live by the
-        # settings toggle; the objects are kept either way so switching
+        # settings toggle; the avatar object is kept either way so switching
         # back is instant and costs no reload.
         try:
             from memory.config_manager import get_hud_style
             self.hud_style = get_hud_style()
         except Exception:
-            self.hud_style = "core"
-        # "3d" is live when the robot GLB + WebEngine exist; otherwise fall
-        # back to core and say so — never a fake 3D.
-        if self.hud_style == "3d" and not self._avatar3d_ok:
-            self.hud_style = "core"
-            self._3d_unavailable = True
-        else:
-            self._3d_unavailable = False
+            self.hud_style = "face"
         self._core_phase = 0.0
 
         self._tick       = 0
@@ -518,7 +457,6 @@ class HudCanvas(QWidget):
         # (0.0–1.0), _amp_disp is the smoothed value the paint code reads.
         self._live_amp  = 0.0
         self._amp_disp  = 0.0
-        self._last_amp  = 0.0   # companion reads the smoothed level
         # (frames, start_time, hop) posted by the playback thread — see
         # push_visemes(). None means "no schedule; use the plain level".
         self._visemes = None
@@ -529,27 +467,6 @@ class HudCanvas(QWidget):
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._step)
         self._tmr.start(16)
-
-
-    def _layout_avatar3d(self) -> None:
-        """Position the 3D view over the centre band; show only in 3d mode."""
-        av = getattr(self, "_avatar3d", None)
-        if av is None or av.widget is None:
-            return
-        try:
-            W, H = self.width(), self.height()
-            band_t, band_h = 12.0, max(60.0, H - 12.0 - 12.0)
-            r = min(W * 0.46, band_h / 2.0)
-            cx, cy = W / 2.0, band_t + band_h / 2.0
-            av.widget.setGeometry(int(cx - r), int(cy - r),
-                                  int(r * 2), int(r * 2))
-            if self.hud_style == "3d" and self._avatar3d_ok:
-                av.show()
-                av.widget.raise_()
-            else:
-                av.hide()
-        except Exception:
-            pass
 
     def glance(self, dx: float, dy: float, hold: float = 1.1) -> None:
         """Ask the avatar to look somewhere for a moment (see HoloAvatar.glance)."""
@@ -641,40 +558,6 @@ class HudCanvas(QWidget):
         gp.end()
         return pm
 
-    def _noor_state(self) -> str:
-        """Map the HUD's state strings (+ live OMNICONTROL signals) to one of
-        the 8 NoorCore states. Priority: error/offline > approval > executing
-        > voice states > idle. Every branch has a real source."""
-        # Terminal conditions first — they must never be masked by chatter.
-        if getattr(self, "_noor_offline", False):
-            return "OFFLINE"
-        if getattr(self, "_noor_error", False):
-            return "ERROR"
-        # Awaiting approval: real pending requests in the OMNICONTROL gateway.
-        try:
-            from core.omnicontrol import gateway as _gw
-            if _gw.list_pending():
-                return "AWAITING_APPROVAL"
-        except Exception:
-            pass
-        # Executing: a real orchestrator task is running.
-        try:
-            from core.omnicontrol import orchestrator as _orc
-            act = [t for t in _orc.list_tasks(5)
-                   if t["state"] in ("RUNNING", "PLANNING", "VERIFYING")]
-            if act:
-                return "EXECUTING"
-        except Exception:
-            pass
-        s = (self.state or "").upper()
-        if s == "LISTENING":
-            return "LISTENING"
-        if s in ("SPEAKING", "TALKING"):
-            return "SPEAKING"
-        if s in ("THINKING", "PROCESSING", "WORKING"):
-            return "THINKING"
-        return "IDLE"
-
     def _step(self):
         self._tick += 1
         now = time.time()
@@ -713,14 +596,13 @@ class HudCanvas(QWidget):
         self._live_amp *= 0.86
         self._amp_disp += (self._live_amp - self._amp_disp) * 0.45
         amp = self._amp_disp
-        self._last_amp = amp  # the floating companion reads this
 
         # The avatar animates off the very same smoothed level the waveform
         # uses — one audio source, so the mouth can never drift out of sync.
         dt = now - self._step_t
         self._step_t = now
         # Integrated, not derived from absolute time: multiplying wall-clock by
-        # a rate that changes with state jumps the rings the instant SHIRAZI
+        # a rate that changes with state jumps the rings the instant JARVIS
         # starts talking. Same lesson the head's sway taught.
         self._core_phase += min(0.10, max(0.0, dt))
 
@@ -730,21 +612,8 @@ class HudCanvas(QWidget):
                               v_open=v_open, v_wide=v_wide or 0.0,
                               v_level=v_level, v_seq=v_seq,
                               v_hop=(sched[2] if sched is not None else 0.02))
-        elif self._noor is not None and self.hud_style == "core":
-            # NoorCore Living Intelligence Core — state-driven, audio-reactive.
-            self._noor.set_state(self._noor_state())
-            self._noor.step(dt, amp)
-        elif self.hud_style == "3d" and getattr(self, "_avatar3d", None) is not None:
-            # Real 3D Iron Man — same state/amp every other mode uses.
-            try:
-                self._avatar3d.set_state(self._noor_state())
-                self._avatar3d.set_amp(amp if self.speaking else amp * 0.3)
-                self._layout_avatar3d()
-            except Exception:
-                pass
         else:
-            # Legacy fallback core (pre-NoorCore paint): slow "breathing" base
-            # target, lifted by the level. Kept for the Classic theme path.
+            # Fallback core: slow "breathing" base target, lifted by the level.
             if now - self._last_t > (0.12 if self.speaking else 0.5):
                 if self.speaking:
                     self._base_scale = 1.03
@@ -1014,25 +883,10 @@ class HudCanvas(QWidget):
                     _acc = qcol(C.PRI)
             self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
 
-        # 3D avatar — the real robot in a WebEngine view laid over the canvas.
-        # The view paints itself; nothing is drawn here for this mode.
-        elif self.hud_style == "3d" and getattr(self, "_avatar3d_ok", False):
-            pass
-
-        # NoorCore Living Intelligence Core — the default centrepiece.
-        elif self._noor is not None and self.hud_style == "core":
-            _band_t = 12.0
-            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
-            _r = min(W * 0.46, _band_h / 2.0)
-            try:
-                from memory.config_manager import get_theme as _get_theme
-                _theme = _NT.get_theme(_get_theme())
-            except Exception:
-                _theme = _NT.get_theme()
-            self._noor.paint(p, cx, _band_t + _band_h / 2.0, _r * 0.72, _theme)
-
-        # reactor core — legacy fallback (Classic theme path) when neither the
-        # head nor NoorCore could be built. There is no fourth path.
+        # reactor core — the other centrepiece, and the fallback if the head
+        # could not be built. There is no third path: the old face.png branch
+        # was unreachable (no such file ships) and the bare orb it fell through
+        # to is what this replaces.
         else:
             _band_t = 12.0
             _band_h = max(60.0, _sy_status - 12.0 - _band_t)
@@ -1063,7 +917,7 @@ class HudCanvas(QWidget):
         p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
 
         # waveform — reacts to the real audio level (mic while listening,
-        # SHIRAZI's own voice while speaking). Falls back to a gentle idle
+        # JARVIS's own voice while speaking). Falls back to a gentle idle
         # ripple when there's no sound. _amp_disp is the smoothed 0–1 level.
         wy = sy + 30
         N, bw = 36, 8
@@ -1183,7 +1037,7 @@ class LogWidget(QTextEdit):
         self._text    = ""
         self._pos     = 0
         self._tag     = "sys"
-        self._ai_name_lc = "shirazi"   # updated when assistant name changes
+        self._ai_name_lc = "jarvis"   # updated when assistant name changes
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._step)
         self._sig.connect(self._enqueue)
@@ -1206,7 +1060,7 @@ class LogWidget(QTextEdit):
         tl = self._text.lower()
         _ai_pfx = f"{self._ai_name_lc}:"
         if   tl.startswith("you:"):                              self._tag = "you"
-        elif tl.startswith(_ai_pfx) or tl.startswith("shirazi:"): self._tag = "ai"
+        elif tl.startswith(_ai_pfx) or tl.startswith("jarvis:"): self._tag = "ai"
         elif tl.startswith("file:"):                             self._tag = "file"
         elif "err" in tl:                                        self._tag = "err"
         else:                                                    self._tag = "sys"
@@ -1537,7 +1391,7 @@ class _CameraPreview(QWidget):
 
 
 class SetupOverlay(QWidget):
-    done = pyqtSignal(dict)  # {"gemini":..., "groq":..., "openrouter":..., "os":...}
+    done = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1568,68 +1422,30 @@ class SetupOverlay(QWidget):
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        def _key_field(placeholder: str) -> QLineEdit:
-            f = QLineEdit()
-            f.setEchoMode(QLineEdit.EchoMode.Password)
-            f.setPlaceholderText(placeholder)
-            f.setFont(QFont("Courier New", 10))
-            f.setFixedHeight(32)
-            f.setStyleSheet(f"""
-                QLineEdit {{
-                    background: #000d12; color: {C.TEXT};
-                    border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
-                }}
-                QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
-            """)
-            return f
-
         layout.addWidget(_lbl("◈  INITIALISATION REQUIRED", 13, True))
-        try:
-            from memory.config_manager import get_gemini_key as _gk
-            _has = bool(_gk())
-        except Exception:
-            _has = False
-        layout.addWidget(_lbl("Update your API keys." if _has else
-                              "Configure J.A.R.V.I.S. before first boot.",
-                              9, color=C.PRI_DIM))
+        layout.addWidget(_lbl("Configure J.A.R.V.I.S. before first boot.", 9, color=C.PRI_DIM))
         layout.addSpacing(6)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep)
         layout.addSpacing(4)
 
-        layout.addWidget(_lbl("GEMINI API KEY  (required)", 8, color=C.TEXT_DIM,
+        layout.addWidget(_lbl("GEMINI API KEY", 8, color=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
-        self._key_input = _key_field("AIza…")
+        self._key_input = QLineEdit()
+        self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_input.setPlaceholderText("AIza…")
+        self._key_input.setFont(QFont("Courier New", 10))
+        self._key_input.setFixedHeight(32)
+        self._key_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: #000d12; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
         layout.addWidget(self._key_input)
-        layout.addSpacing(4)
-
-        layout.addWidget(_lbl("GROQ API KEY  (optional — fallback text model)", 8,
-                               color=C.TEXT_DIM,
-                               align=Qt.AlignmentFlag.AlignLeft))
-        self._groq_input = _key_field("gsk_…")
-        layout.addWidget(self._groq_input)
-        layout.addSpacing(4)
-
-        layout.addWidget(_lbl("OPENROUTER API KEY  (optional — fallback text model)", 8,
-                               color=C.TEXT_DIM,
-                               align=Qt.AlignmentFlag.AlignLeft))
-        self._or_input = _key_field("sk-or-…")
-        layout.addWidget(self._or_input)
-        layout.addSpacing(8)
-
-        # Pre-fill when re-configuring so existing keys aren't wiped.
-        try:
-            from memory.config_manager import (get_gemini_key, get_groq_key,
-                                               get_openrouter_key)
-            if get_gemini_key():
-                self._key_input.setText(get_gemini_key())
-            if get_groq_key():
-                self._groq_input.setText(get_groq_key())
-            if get_openrouter_key():
-                self._or_input.setText(get_openrouter_key())
-        except Exception:
-            pass
+        layout.addSpacing(12)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep2)
@@ -1700,12 +1516,7 @@ class SetupOverlay(QWidget):
                 f" QLineEdit {{ border: 1px solid {C.RED}; }}"
             )
             return
-        self.done.emit({
-            "gemini": key,
-            "groq": self._groq_input.text().strip(),
-            "openrouter": self._or_input.text().strip(),
-            "os": self._sel_os,
-        })
+        self.done.emit(key, self._sel_os)
 
 
 class HueWheel(QWidget):
@@ -2049,32 +1860,14 @@ class PluginManagerOverlay(QWidget):
         sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
         lay.addWidget(sep)
 
-        # The rows live inside a scroll area capped to the available height —
-        # with 55+ plugins the list is far taller than any window.
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-        )
-        inner = QWidget()
-        rows_lay = QVBoxLayout(inner)
-        rows_lay.setContentsMargins(0, 0, 8, 0)
-        rows_lay.setSpacing(6)
-
         if not plugins:
             empty = QLabel("No plugins found in /plugins.")
             empty.setFont(QFont("Courier New", 8))
             empty.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-            rows_lay.addWidget(empty)
+            lay.addWidget(empty)
 
         for p in plugins:
-            rows_lay.addLayout(self._build_row(p))
-        rows_lay.addStretch(1)
-
-        scroll.setWidget(inner)
-        lay.addWidget(scroll, stretch=1)
+            lay.addLayout(self._build_row(p))
 
         lay.addSpacing(4)
         close_btn = QPushButton("CLOSE")
@@ -2251,97 +2044,32 @@ class ConfirmBanner(_HudOverlay):
         no.setFocus()
 
 
-class ApprovalCard(_HudOverlay):
-    """OMNICONTROL permission request card — the HUD face of the authorization
-    gateway's pending approvals.
-
-    Shows the requested tool, resource and reason with Allow Once / Allow
-    Always / Deny. The decision travels from a human finger to
-    gateway.resolve_pending(); the model never approves itself. While the card
-    is up the NoorCore shows AWAITING_APPROVAL (steady amber).
-    """
-    resolved = pyqtSignal(str, str)  # (request_id, decision)
-    _OW = 440
-
-    def __init__(self, request: dict, parent=None):
-        super().__init__(parent)
-        self._req = request
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        try:
-            from memory.config_manager import get_theme as _gt
-            from core import noorcore_tokens as _nt
-            _th = _nt.get_theme(_gt())
-        except Exception:
-            _th = {"amber": "#F2B84B", "text": "#F2F7FC",
-                   "text_dim": "#A6B6C8", "surface": "#101824"}
-        self.setStyleSheet(f"""
-            ApprovalCard {{
-                background: {_th["surface"]};
-                border: 1px solid {_th["amber"]};
-                border-radius: 10px;
-            }}
-        """)
-        self.setFixedWidth(self._OW)
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(8)
-
-        hdr = QLabel("⚠  PERMISSION REQUEST")
-        hdr.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color: {_th['amber']}; background: transparent;")
-        lay.addWidget(hdr)
-
-        ttl = QLabel(f"{request.get('tool', '?')}")
-        ttl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        ttl.setStyleSheet(f"color: {_th['text']}; background: transparent;")
-        lay.addWidget(ttl)
-
-        det = QLabel(f"{request.get('resource', '')}\n{request.get('reason', '')}")
-        det.setWordWrap(True)
-        det.setFont(QFont("Segoe UI", 9))
-        det.setStyleSheet(f"color: {_th['text_dim']}; background: transparent;")
-        lay.addWidget(det)
-
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        for label, dec in (("ALLOW ONCE", "once"), ("ALLOW ALWAYS", "always"),
-                           ("DENY", "deny")):
-            btn = QPushButton(label)
-            btn.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            if dec == "deny":
-                btn.setStyleSheet("color: #FF647C; background: transparent;"
-                                  "border: 1px solid #FF647C; border-radius: 6px;"
-                                  "padding: 8px;")
-            else:
-                btn.setStyleSheet(f"color: {_th['amber']}; background: transparent;"
-                                  f"border: 1px solid {_th['amber']}; border-radius: 6px;"
-                                  "padding: 8px;")
-            btn.clicked.connect(
-                lambda _=False, d=dec: self._decide(d))
-            row.addWidget(btn)
-        lay.addLayout(row)
-
-    def _decide(self, decision: str) -> None:
-        try:
-            from core.omnicontrol import gateway as _gw
-            _gw.resolve_pending(self._req["id"], decision)
-        except Exception:
-            pass
-        self.resolved.emit(self._req["id"], decision)
-        self.hide()
-
-
 class AudioDeviceOverlay(_HudOverlay):
-    """Choose which microphone SHIRAZI listens to and which speakers it uses.
+    """Choose which microphone JARVIS listens to and which speakers it uses.
 
     Both audio streams used to open with no `device=` at all, so they always
     took the OS default — which on Windows moves by itself the moment a headset
-    is plugged in. 'SHIRAZI can't hear me' is usually 'SHIRAZI is listening to the
+    is plugged in. 'JARVIS can't hear me' is usually 'JARVIS is listening to the
     webcam'."""
 
     picked = pyqtSignal()      # emitted after Apply, when something changed
+
+    # THESE EXIST BECAUSE QTimer.singleShot FROM A WORKER THREAD NEVER FIRES.
+    #
+    # The first version posted results back with `QTimer.singleShot(0, fn)` from
+    # inside the audio thread. A QTimer belongs to the thread that creates it,
+    # and that thread has no event loop — so the timer was created, never ran,
+    # and the panel sat on "Speak now…" for ever while the recording finished
+    # silently behind it. Reported as "I saw no sign of anything at all", which
+    # is precisely what it looked like.
+    #
+    # A signal is the thread-safe way across: Qt queues it onto the receiving
+    # object's thread, which for a widget is the GUI thread. Both carry only
+    # plain values — never a widget — because the widgets belong to the GUI
+    # thread and the worker must not touch them even to pass them along.
+    _level_seen = pyqtSignal(int)          # 0-100, while recording
+    _test_result = pyqtSignal(str, bool)   # sentence, was it good
+
     _OW = 460
 
     def __init__(self, parent=None):
@@ -2380,6 +2108,13 @@ class AudioDeviceOverlay(_HudOverlay):
             f"selection-background-color: {C.PRI_GHO}; border: 1px solid {C.BORDER}; }}"
         )
 
+        _test_css = (
+            f"QPushButton {{ background: transparent; color: {C.TEXT_DIM}; "
+            f"border: 1px solid {C.BORDER}; border-radius: 3px; }}"
+            f"QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}"
+            f"QPushButton:disabled {{ color: {C.BORDER}; }}"
+        )
+
         def _row(label: str, kind: str, current: str) -> QComboBox:
             cap = QLabel(label)
             cap.setFont(QFont("Courier New", 8))
@@ -2403,14 +2138,122 @@ class AudioDeviceOverlay(_HudOverlay):
                 # silently resetting the user's choice to default.
                 box.addItem(f"{current}  (not connected)", current)
                 box.setCurrentIndex(box.count() - 1)
-            lay.addWidget(box)
+
+            # THE ONE CHECK THE STARTUP PROBE CANNOT MAKE.
+            #
+            # core/audio_devices decides at launch whether a device opens and
+            # whether it moves audio, and it does that with silence. A muted
+            # microphone, a level slider at zero and a privacy shutter all pass
+            # every one of those tests and still deliver a flat line — the only
+            # thing that separates them from a working microphone is a person
+            # speaking into it.
+            #
+            # So the button is here, beside the dropdown, in the panel somebody
+            # opens when JARVIS cannot hear them. It replaces a loose
+            # `ses_testi.py` in the project root that nobody would ever find.
+            btn_row = QHBoxLayout(); btn_row.setSpacing(6)
+            btn_row.addWidget(box, 1)
+            test = QPushButton("TEST")
+            test.setFixedSize(64, 30)
+            test.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            test.setCursor(Qt.CursorShape.PointingHandCursor)
+            test.setStyleSheet(_test_css)
+            btn_row.addWidget(test)
+            lay.addLayout(btn_row)
+
+            # A meter, because a static label is indistinguishable from a hang.
+            # Three seconds of "Speak now" with nothing moving was reported as
+            # "I saw no sign of anything" — correctly, since nothing on screen
+            # responded to the user's voice.
+            meter = QProgressBar()
+            meter.setRange(0, 100)
+            meter.setValue(0)
+            meter.setTextVisible(False)
+            meter.setFixedHeight(6)
+            meter.setStyleSheet(
+                f"QProgressBar {{ background: #000d12; border: 1px solid {C.BORDER}; "
+                f"border-radius: 3px; }}"
+                f"QProgressBar::chunk {{ background: {C.PRI}; border-radius: 2px; }}")
+            meter.hide()
+            lay.addWidget(meter)
+
+            result = QLabel("")
+            result.setWordWrap(True)
+            result.setFont(QFont("Courier New", 7))
+            result.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            lay.addWidget(result)
+
+            test.clicked.connect(
+                lambda _=False, k=kind, b=box, t=test, r=result, m=meter:
+                    self._run_test(k, b, t, r, m))
             return box
+
+        # Which row is being tested right now. One at a time — the button is
+        # disabled for the duration — so a single slot is enough, and it keeps
+        # widgets off the signal payload.
+        self._active = None                # (button, label, meter)
+        self._level_seen.connect(self._on_level)
+        self._test_result.connect(self._on_result)
 
         self._in_box  = _row("MICROPHONE — what SHIRAZI hears you with",
                              "input", get_input_device())
         lay.addSpacing(4)
         self._out_box = _row("SPEAKERS — what SHIRAZI talks through",
                              "output", get_output_device())
+
+        # ── Output volume, beside the output device ──────────────────────────
+        #
+        # Choosing "Realtek(R) Audio" here and finding it far too quiet used to
+        # mean leaving this panel, opening the system sound settings, finding
+        # the same endpoint again and moving a slider there. The volume belongs
+        # next to the device it applies to.
+        _vol_now = None
+        try:
+            from core.audio_devices import get_output_volume
+            # The SELECTED output, not the system default. Somebody puts the
+            # assistant on their speakers and keeps everything else in their
+            # headphones; a slider labelled with one device that moves the
+            # other is worse than no slider at all.
+            _vol_now = get_output_volume(self._out_box.currentData() or "")
+        except Exception:
+            pass
+
+        if _vol_now is not None:
+            vcap = QLabel("OUTPUT VOLUME")
+            vcap.setFont(QFont("Courier New", 8))
+            vcap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            lay.addSpacing(4)
+            lay.addWidget(vcap)
+
+            vrow = QHBoxLayout(); vrow.setSpacing(8)
+            self._vol = QSlider(Qt.Orientation.Horizontal)
+            self._vol.setRange(0, 100)
+            self._vol.setValue(int(_vol_now))
+            self._vol.setFixedHeight(22)
+            self._vol.setStyleSheet(
+                f"QSlider::groove:horizontal {{ background: #000d12; height: 4px; "
+                f"border: 1px solid {C.BORDER}; border-radius: 2px; }}"
+                f"QSlider::sub-page:horizontal {{ background: {C.PRI_DIM}; "
+                f"border-radius: 2px; }}"
+                f"QSlider::handle:horizontal {{ background: {C.PRI}; width: 10px; "
+                f"margin: -5px 0; border-radius: 5px; }}")
+            self._vol_lbl = QLabel(f"{int(_vol_now)}%")
+            self._vol_lbl.setFont(QFont("Courier New", 8))
+            self._vol_lbl.setFixedWidth(40)
+            self._vol_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+            vrow.addWidget(self._vol, 1)
+            vrow.addWidget(self._vol_lbl)
+            lay.addLayout(vrow)
+
+            # valueChanged fires for every pixel of a drag, and each one is a
+            # COM call into the audio endpoint. sliderReleased fires once, when
+            # the user has decided — the label still follows the handle so the
+            # number moves while they drag.
+            self._vol.valueChanged.connect(
+                lambda v: self._vol_lbl.setText(f"{v}%"))
+            self._vol.sliderReleased.connect(self._apply_volume)
+            self._out_box.currentIndexChanged.connect(
+                lambda _i: self._volume_follows_device())
 
         note = QLabel("Applying reconnects the session. Your conversation is kept.")
         note.setWordWrap(True)
@@ -2445,6 +2288,105 @@ class AudioDeviceOverlay(_HudOverlay):
         row.addWidget(cancel)
         lay.addLayout(row)
 
+    def _apply_volume(self):
+        """Set the system output volume from the slider, off the Qt thread.
+
+        The Windows path goes through COM, which can block for tens of
+        milliseconds; that is not long enough to see but is long enough to
+        stutter a drag, and there is no reason to make the interface wait for
+        it.
+        """
+        import threading
+        value = self._vol.value()
+        device = self._out_box.currentData() or ""
+
+        def _work():
+            from core import audio_devices
+            if not audio_devices.set_output_volume(value, device):
+                print(f"[Audio] the volume of '{device}' could not be set "
+                      f"to {value}%")
+
+        threading.Thread(target=_work, daemon=True, name="audio-volume").start()
+
+    def _volume_follows_device(self):
+        """Re-read the slider when the chosen output changes.
+
+        Each device keeps its own level, so leaving the handle where it was
+        would show the previous device's volume against the new device's name —
+        and the next drag would then jump it there.
+        """
+        if not hasattr(self, "_vol"):
+            return
+        try:
+            from core.audio_devices import get_output_volume
+            now = get_output_volume(self._out_box.currentData() or "")
+        except Exception:
+            now = None
+        if now is None:
+            return
+        self._vol.blockSignals(True)
+        self._vol.setValue(int(now))
+        self._vol.blockSignals(False)
+        self._vol_lbl.setText(f"{int(now)}%")
+
+    def _run_test(self, kind, box, button, label, meter=None):
+        """Record or play for real, off the Qt thread.
+
+        Both calls block for seconds — recording waits for the user to speak,
+        the tone waits for itself — and doing that on the Qt thread freezes the
+        HUD, which is the mistake Mark LV already paid for once with a 2.1
+        second wake-word import in the settings drawer.
+
+        Results come back by signal, not by timer. See the note on
+        `_level_seen` above for why that distinction is the whole feature.
+        """
+        import threading
+
+        name = box.currentData() or ""
+        self._active = (button, label, meter)
+        button.setEnabled(False)
+        label.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        label.setText("Speak now…" if kind == "input" else "Playing a tone…")
+        if meter is not None and kind == "input":
+            meter.setValue(0)
+            meter.show()
+
+        def _work():
+            from core import audio_devices
+            try:
+                if kind == "input":
+                    res = audio_devices.measure_input(
+                        name,
+                        on_level=lambda f: self._level_seen.emit(int(f * 100)))
+                    text = f"peak {res['peak']}  —  {res['verdict']}"
+                else:
+                    res = audio_devices.play_tone(name)
+                    text = res["verdict"]
+                good = bool(res.get("ok", False))
+            except Exception as e:
+                text, good = f"The test itself failed: {e}", False
+            self._test_result.emit(text, good)
+
+        threading.Thread(target=_work, daemon=True, name=f"audio-test-{kind}").start()
+
+    def _on_level(self, value: int):
+        """A live level, already on the GUI thread thanks to the signal."""
+        if self._active and self._active[2] is not None:
+            self._active[2].setValue(max(0, min(100, value)))
+
+    def _on_result(self, text: str, good: bool):
+        if not self._active:
+            return
+        button, label, meter = self._active
+        self._active = None
+        button.setEnabled(True)
+        if meter is not None:
+            meter.setValue(0)
+            meter.hide()
+        label.setStyleSheet(
+            f"color: {C.PRI if good else C.TEXT_DIM}; background: transparent;")
+        label.setText(text)
+
     def _apply(self):
         from memory.config_manager import (
             get_input_device, get_output_device,
@@ -2463,7 +2405,7 @@ class AudioDeviceOverlay(_HudOverlay):
 
 
 class MemoryOverlay(_HudOverlay):
-    """Everything SHIRAZI has stored about you, and when it learned it.
+    """Everything JARVIS has stored about you, and when it learned it.
 
     Memory used to be a 2200-character store that deleted its oldest entries
     when full and mentioned it only on stdout. The cap is gone; this panel is
@@ -2656,12 +2598,6 @@ class MemoryOverlay(_HudOverlay):
         # Qt is entitled to touch the sender after a slot returns; tearing it
         # down mid-emission is how a widget ends up half-alive on screen.
         QTimer.singleShot(0, self._rebuild)
-
-
-# ── ENGINE & PROVIDERS panel, ported from Mark LVI ─────────────────────
-# The providers package is imported inside ProvidersOverlay.__init__ —
-# on the click, never at startup — so an install that never opens this
-# panel never executes a line of it.
 
 
 class _ScrollSafeCombo(QComboBox):
@@ -3694,7 +3630,7 @@ class ProvidersOverlay(_HudOverlay):
 
 
 class ClipboardPanel(QWidget):
-    """Floating panel shown when text is copied — offers quick Shirazi actions."""
+    """Floating panel shown when text is copied — offers quick Jarvis actions."""
 
     action_requested = pyqtSignal(str)
     _W, _H = 326, 112
@@ -3824,9 +3760,9 @@ class PluginSettingsOverlay(QWidget):
 
         if not self._sections:
             root.addWidget(self._lbl(
-                "No plugins need settings right now.\nShirazi's built-in plugins "
-                "take their options by voice each time you use them — nothing "
-                "to configure up front.", 9, color=C.TEXT_DIM))
+                "No configurable plugins are installed.\nDrop a plugin that needs "
+                "settings (like the 3D-printer suite) into the plugins folder and "
+                "it will show up here.", 9, color=C.TEXT_DIM))
         else:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -4043,7 +3979,8 @@ class RemoteKeyOverlay(QWidget):
     _OW, _OH = 400, 465
 
     def __init__(self, url: str, key: str, auto_login_url: str = "",
-                 manual_url: str = "", expiry_secs: int = 600, parent=None):
+                 manual_url: str = "", expiry_secs: int = 600, parent=None,
+                 bind_error: str = ""):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
@@ -4093,9 +4030,40 @@ class RemoteKeyOverlay(QWidget):
         self._update_qr(auto_login_url)
 
         lay.addWidget(_lbl("Scan with phone camera to connect instantly", 8, color=C.TEXT_DIM))
-        lay.addWidget(_lbl("Phone says \u201cnot private\u201d? Tap Advanced \u2192 Proceed — "
-                           "it's your own PC's certificate, safe on your Wi-Fi.", 7,
-                           color=C.TEXT_DIM))
+
+        # THE ONE FAILURE THAT LOOKS LIKE THE SERVER BEING OFF.
+        #
+        # Windows writes a BLOCK rule for an executable when its "Allow access?"
+        # prompt is dismissed, and a block overrides every allow rule there is —
+        # including the port rule this app carefully creates. The phone then
+        # reports "refused to connect" while the server is running perfectly.
+        #
+        # It is invisible from the HUD, which is where the person scanning the
+        # QR code is looking, and it is per-EXECUTABLE: the shortcut runs
+        # pythonw.exe while an editor runs python.exe, so it can block one launch
+        # method and not the other on the same machine. That difference is
+        # unguessable without being told, so it is said here.
+        # Whatever is stopping this from working, say it HERE — beside the QR
+        # code, where the person about to scan it is looking. A dashboard that
+        # cannot be reached and does not explain why is the single most
+        # frustrating failure this app has.
+        if bind_error:
+            lay.addWidget(_lbl("⚠  " + bind_error, 8, color="#f4b942"))
+
+        try:
+            from dashboard.server import blocking_firewall_rules
+            _blocked = blocking_firewall_rules()
+        except Exception:
+            _blocked = []
+        if _blocked:
+            warn = _lbl(
+                "⚠  Windows is blocking incoming connections to this copy of "
+                "Python, so your phone cannot reach this page. Restart SHIRAZI "
+                "and accept the Windows prompt, or remove the rules named "
+                + ", ".join(sorted({n for n, _ in _blocked}))
+                + " under Windows Defender Firewall → Inbound Rules.",
+                8, color="#f4b942")
+            lay.addWidget(warn)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet(f"color: {C.BORDER}; margin: 1px 0;")
@@ -4267,19 +4235,22 @@ class RemoteKeyOverlay(QWidget):
 
 
 class MainWindow(QMainWindow):
-    on_close_request = None  # P2.7: set by main.py -> graceful shutdown
+    # Shirazi compat: main.py sets this to its ordered-shutdown handler;
+    # closeEvent below calls it so closing the window shuts the assistant
+    # down cleanly instead of killing the daemon thread.
+    on_close_request = None
 
     def closeEvent(self, e):
-        # P2.7: ordered shutdown instead of killing the daemon thread.
+        # Ordered shutdown instead of killing the daemon thread.
         try:
             if callable(self.on_close_request):
                 self.on_close_request()
         except Exception:
             pass
         super().closeEvent(e)
+
     _log_sig        = pyqtSignal(str)
     _state_sig      = pyqtSignal(str)
-    _degraded_sig   = pyqtSignal(bool, str)  # Phase 3.1: (active, provider)
     _content_sig    = pyqtSignal(str, str)   # (title, text) — thread-safe content display
     _reconfig_sig   = pyqtSignal()           # trigger setup overlay from any thread
     _camera_sig     = pyqtSignal(bytes)      # show camera frame preview (small overlay)
@@ -4323,15 +4294,14 @@ class MainWindow(QMainWindow):
 
         self.on_text_command   = None
         self.on_remote_clicked = None   # callable: () -> (url, key) | None
-        self.on_interrupt      = None   # callable: () -> None — stop SHIRAZI mid-speech
+        self.on_interrupt      = None   # callable: () -> None — stop JARVIS mid-speech
         self.on_voice_change   = None   # callable: () -> None — rebuild session with new voice
         self.on_audio_device_change = None  # callable: () -> None — reopen audio streams
         self._confirm_overlay  = None   # live ConfirmBanner, if one is on screen
-        self._companion = None         # floating NoorCore, created when enabled
         self._edge_glow = None         # MYRA edge glow, created when enabled
-        self.get_plugins       = None   # callable: () -> list[dict], set by ShiraziLive
-        self.get_plugin_settings = None # callable: () -> list[dict] settings schemas, set by ShiraziLive
-        self.on_wake_toggle    = None   # callable: (enable: bool) -> str, set by ShiraziLive
+        self.get_plugins       = None   # callable: () -> list[dict], set by JarvisLive
+        self.get_plugin_settings = None # callable: () -> list[dict] settings schemas, set by JarvisLive
+        self.on_wake_toggle    = None   # callable: (enable: bool) -> str, set by JarvisLive
         self.on_wake_manual    = None   # callable: () -> None — manual sleep/wake
         self.on_push_to_talk   = None   # callable: (enable: bool) -> str scope
         self.ptt_hold          = None   # callable: (held: bool) -> None — windowed chord
@@ -4404,7 +4374,7 @@ class MainWindow(QMainWindow):
         # inventing a second mechanism means the avatar, the camera and a video
         # can never be on screen at once.
         self._video_split = False        # is the sound a separate stream?
-        self._video_auto_muted = False   # did SHIRAZI close the mic, or the user?
+        self._video_auto_muted = False   # did JARVIS close the mic, or the user?
         # A plain flag rather than reading the widget. video_is_playing() is
         # called from plugin threads, and reading a widget's state from one is
         # not something to rely on; an attribute is.
@@ -4436,7 +4406,7 @@ class MainWindow(QMainWindow):
             return b
 
         # Muted is the default and the button says so, because a soundtrack
-        # talking over SHIRAZI is the one way this feature could make the
+        # talking over JARVIS is the one way this feature could make the
         # assistant worse rather than better.
         self._video_mute_btn = _vid_btn("🔇  SOUND OFF")
         self._video_mute_btn.clicked.connect(self._toggle_video_mute)
@@ -4563,17 +4533,8 @@ class MainWindow(QMainWindow):
         self._metric_tmr.start(2000)
         self._update_metrics()
 
-        # OMNICONTROL approval poll — surfaces gateway pending approvals as
-        # HUD cards (Allow Once / Allow Always / Deny). The model can never
-        # approve itself; only this human tap resolves the request.
-        self._approval_overlay = None
-        self._approval_tmr = QTimer(self)
-        self._approval_tmr.timeout.connect(self._poll_approvals)
-        self._approval_tmr.start(1500)
-
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
-        self._degraded_sig.connect(self._apply_degraded)
         self._content_sig.connect(self._show_content)
         self._reconfig_sig.connect(self._show_setup)
         self._camera_sig.connect(self._show_camera_frame)
@@ -4768,7 +4729,7 @@ class MainWindow(QMainWindow):
     def _sync_mic_for_video(self) -> None:
         """Close the microphone while the video is making sound.
 
-        SHIRAZI subtracts its OWN output from the microphone — that is what
+        JARVIS subtracts its OWN output from the microphone — that is what
         core/echo.py does — but a video plays through a different output
         entirely, so the guard has never heard of it and the assistant answers
         the film. There is no arrangement in which an open microphone and a
@@ -4776,7 +4737,7 @@ class MainWindow(QMainWindow):
 
         So the microphone closes for exactly as long as the sound is on, and
         opens again by itself the moment it goes off or the video is closed.
-        Only if SHIRAZI closed it: a microphone the user muted themselves stays
+        Only if JARVIS closed it: a microphone the user muted themselves stays
         muted, and pressing the mute key during a video hands the decision back
         to them for good.
         """
@@ -4839,9 +4800,9 @@ class MainWindow(QMainWindow):
     # Icon generation — arc-reactor style, rendered with Pillow
     # ------------------------------------------------------------------
     @staticmethod
-    def _build_shirazi_icon(out_path: Path) -> bool:
+    def _build_jarvis_icon(out_path: Path) -> bool:
         """
-        Render a SHIRAZI arc-reactor icon at 4× resolution and downsample
+        Render a JARVIS arc-reactor icon at 4× resolution and downsample
         for crisp results at all sizes. Saves a multi-res .ico to out_path.
         Returns True on success.
         """
@@ -5048,7 +5009,7 @@ class MainWindow(QMainWindow):
             # ── xdg-user-dir honours localized names (~/Masaüstü, …) ──────
             try:
                 out = subprocess.run(["xdg-user-dir", "DESKTOP"],
-                                     capture_output=True, text=True, timeout=5)
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
                 p = Path(out.stdout.strip())
                 if out.stdout.strip() and p != home and p.is_dir():
                     return p
@@ -5081,9 +5042,9 @@ class MainWindow(QMainWindow):
         desktop = self._get_desktop_dir()
 
         # Arc-reactor icon (.ico — also exported as .png for Linux/macOS)
-        ico_path = Path(__file__).resolve().parent / "config" / "shirazi.ico"
+        ico_path = Path(__file__).resolve().parent / "config" / "jarvis.ico"
         if not ico_path.exists():
-            self._build_shirazi_icon(ico_path)
+            self._build_jarvis_icon(ico_path)
 
         try:
             _os = platform.system()
@@ -5107,7 +5068,7 @@ class MainWindow(QMainWindow):
 
                 # Launcher executable (bash — runs as background process,
                 # macOS does NOT open Terminal for executables inside .app bundles)
-                launcher = mac_dir / "SHIRAZI"
+                launcher = mac_dir / "JARVIS"
                 launcher.write_text(
                     "#!/usr/bin/env bash\n"
                     f'cd "{script.parent}"\n'
@@ -5122,9 +5083,9 @@ class MainWindow(QMainWindow):
                     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
                     '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
                     '<plist version="1.0"><dict>\n'
-                    '  <key>CFBundleExecutable</key><string>SHIRAZI</string>\n'
+                    '  <key>CFBundleExecutable</key><string>JARVIS</string>\n'
                     '  <key>CFBundleIdentifier</key>'
-                    '<string>com.shirazi.assistant</string>\n'
+                    '<string>com.jarvis.assistant</string>\n'
                     '  <key>CFBundleName</key><string>J.A.R.V.I.S</string>\n'
                     '  <key>CFBundlePackageType</key><string>APPL</string>\n'
                     '  <key>CFBundleVersion</key><string>1.0</string>\n'
@@ -5338,7 +5299,7 @@ class MainWindow(QMainWindow):
         self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         mid.addWidget(self._title_lbl)
         _sub_text = ("A Friendly Assistant"
-                     if _disp in ("SHIRAZI", "J.A.R.V.I.S")
+                     if _disp in ("JARVIS", "J.A.R.V.I.S")
                      else "Personal AI Assistant")
         self._sub_lbl = QLabel(_sub_text)
         self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -5452,15 +5413,6 @@ class MainWindow(QMainWindow):
             return l
 
         lay.addWidget(_sec("ACTIVITY LOG"))
-        # Phase 3.1: DEGRADED MODE indicator (hidden unless voice link is down).
-        self._degraded_label = QLabel("⚠ DEGRADED — text only")
-        self._degraded_label.setStyleSheet(
-            "color: #F2B84B; background: rgba(242,184,75,0.12); "
-            "border: 1px solid #F2B84B; border-radius: 4px; padding: 4px; "
-            "font-weight: bold;")
-        self._degraded_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._degraded_label.hide()
-        lay.addWidget(self._degraded_label)
         self._log = LogWidget()
         lay.addWidget(self._log, stretch=1)
 
@@ -5665,6 +5617,16 @@ class MainWindow(QMainWindow):
         fs_btn = _row(QPushButton("⛶  FULLSCREEN  [F11]"), self._BTN_DIM)
         fs_btn.clicked.connect(self._toggle_fullscreen)
 
+        self._edge_glow_btn = _row(QPushButton())
+        self._edge_glow_btn.clicked.connect(self._toggle_edge_glow)
+        self._refresh_edge_glow_btn()
+        try:
+            from memory.config_manager import get_edge_glow_enabled
+            if get_edge_glow_enabled():
+                self._ensure_edge_glow()
+        except Exception:
+            pass
+
         self._brief_btn = _row(QPushButton())
         self._brief_btn.clicked.connect(self._toggle_brief)
 
@@ -5684,27 +5646,6 @@ class MainWindow(QMainWindow):
         self._hud_btn = _row(QPushButton())
         self._hud_btn.clicked.connect(self._toggle_hud_style)
         self._refresh_hud_btn()
-
-        self._companion_btn = _row(QPushButton())
-        self._companion_btn.clicked.connect(self._toggle_companion)
-        self._refresh_companion_btn()
-
-        self._edge_glow_btn = _row(QPushButton())
-        self._edge_glow_btn.clicked.connect(self._toggle_edge_glow)
-        self._refresh_edge_glow_btn()
-        try:
-            from memory.config_manager import get_edge_glow_enabled
-            if get_edge_glow_enabled():
-                self._ensure_edge_glow()
-        except Exception:
-            pass
-
-        self._apikeys_btn = _row(QPushButton())
-        self._apikeys_btn.setText("🔑  API KEYS")
-        self._apikeys_btn.setStyleSheet(self._BTN_DIM)
-        self._apikeys_btn.setToolTip(
-            "View or change the Gemini, Groq and OpenRouter API keys.")
-        self._apikeys_btn.clicked.connect(self._show_setup)
 
         w.adjustSize()
         return w
@@ -5932,7 +5873,7 @@ class MainWindow(QMainWindow):
     # while translating the tag would mean a table per language, which is worse.
     # A shape carries it in every language, and shape plus colour still reads
     # for someone who cannot separate red from amber. What the marks mean
-    # arrives the way everything else does: SHIRAZI says it out loud.
+    # arrives the way everything else does: JARVIS says it out loud.
     _REVIEW_MARKS = {"serious": ("RED", "▲"), "caution": ("ACC2", "●"), "note": ("PRI_DIM", "·")}
 
     @staticmethod
@@ -6007,7 +5948,7 @@ class MainWindow(QMainWindow):
     # An interactive twin of the content panel. The plugin only ever hands over
     # questions; everything about asking, marking and reporting happens here,
     # and the finished result is pushed back into the conversation the same way
-    # a dropped file is — as a message SHIRAZI reads and responds to. That keeps
+    # a dropped file is — as a message JARVIS reads and responds to. That keeps
     # the tool call short (it returns the moment the board is up) and leaves the
     # talking to the assistant, in the user's own language.
 
@@ -6214,7 +6155,7 @@ class MainWindow(QMainWindow):
         elif verdict is False:
             mark, colour = "✕  " + str(q.get("answer", "")), C.RED
         else:
-            # Open answers and near-miss gap-fills are SHIRAZI's to judge. Saying
+            # Open answers and near-miss gap-fills are JARVIS's to judge. Saying
             # so is honest; marking it wrong here would be a guess.
             mark, colour = "…  noted — I'll go over this one with you", C.ACC2
         note = q.get("note") or ""
@@ -6249,7 +6190,7 @@ class MainWindow(QMainWindow):
 
         self._log.append_log(f"QUIZ: {topic or 'quiz'} — {right}/{total} correct")
 
-        # Hand it back to SHIRAZI as a message, not as a tool return: the tool
+        # Hand it back to JARVIS as a message, not as a tool return: the tool
         # call ended minutes ago. This is the same channel a dropped file uses.
         lines = [f"[QUIZ_DONE] topic={topic or 'general'} | "
                  f"auto-marked {right}/{total} correct"
@@ -6322,12 +6263,14 @@ class MainWindow(QMainWindow):
         key    = result[1]
         auto   = result[2] if len(result) >= 3 else ""
         manual = result[3] if len(result) >= 4 else url
+        berr   = result[4] if len(result) >= 5 else ""
         if self._remote_overlay:
             self._remote_overlay._do_close()
         cw  = self.centralWidget()
         ow, oh = RemoteKeyOverlay._OW, RemoteKeyOverlay._OH
         ov  = RemoteKeyOverlay(url, key, auto_login_url=auto, manual_url=manual,
-                               expiry_secs=600, parent=cw)
+                               expiry_secs=600, parent=cw,
+                               bind_error=berr)
         ov.set_new_key_callback(self.on_remote_clicked)
         ov.setGeometry(
             (cw.width()  - ow) // 2,
@@ -6349,7 +6292,7 @@ class MainWindow(QMainWindow):
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                     r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
                 try:
-                    winreg.QueryValueEx(key, "SHIRAZI_AI")
+                    winreg.QueryValueEx(key, "JARVIS_AI")
                     return True
                 except FileNotFoundError:
                     return False
@@ -6357,9 +6300,9 @@ class MainWindow(QMainWindow):
                     winreg.CloseKey(key)
             elif _OS == "Darwin":
                 return (Path.home() / "Library" / "LaunchAgents"
-                        / "com.shirazi.assistant.plist").exists()
+                        / "com.jarvis.assistant.plist").exists()
             else:
-                return (Path.home() / ".config" / "autostart" / "shirazi.desktop").exists()
+                return (Path.home() / ".config" / "autostart" / "jarvis.desktop").exists()
         except Exception:
             return False
 
@@ -6372,17 +6315,17 @@ class MainWindow(QMainWindow):
                 reg = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                     r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
                 if currently_on:
-                    winreg.DeleteValue(reg, "SHIRAZI_AI")
+                    winreg.DeleteValue(reg, "JARVIS_AI")
                 else:
                     pythonw = Path(sys.executable).parent / "pythonw.exe"
                     exe = str(pythonw if pythonw.exists() else sys.executable)
-                    winreg.SetValueEx(reg, "SHIRAZI_AI", 0, winreg.REG_SZ,
+                    winreg.SetValueEx(reg, "JARVIS_AI", 0, winreg.REG_SZ,
                                       f'"{exe}" "{script}"')
                 winreg.CloseKey(reg)
             elif _OS == "Darwin":
                 plist_dir = Path.home() / "Library" / "LaunchAgents"
                 plist_dir.mkdir(parents=True, exist_ok=True)
-                plist = plist_dir / "com.shirazi.assistant.plist"
+                plist = plist_dir / "com.jarvis.assistant.plist"
                 if currently_on:
                     plist.unlink(missing_ok=True)
                 else:
@@ -6391,7 +6334,7 @@ class MainWindow(QMainWindow):
                         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
                         '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
                         '<plist version="1.0"><dict>\n'
-                        '  <key>Label</key><string>com.shirazi.assistant</string>\n'
+                        '  <key>Label</key><string>com.jarvis.assistant</string>\n'
                         '  <key>ProgramArguments</key><array>\n'
                         f'    <string>{sys.executable}</string>\n'
                         f'    <string>{script}</string>\n'
@@ -6402,7 +6345,7 @@ class MainWindow(QMainWindow):
             else:
                 desk_dir = Path.home() / ".config" / "autostart"
                 desk_dir.mkdir(parents=True, exist_ok=True)
-                desk = desk_dir / "shirazi.desktop"
+                desk = desk_dir / "jarvis.desktop"
                 if currently_on:
                     desk.unlink(missing_ok=True)
                 else:
@@ -6462,7 +6405,7 @@ class MainWindow(QMainWindow):
                         "awake": bool(s.get("awake"))}
             except Exception:
                 pass
-        # Before ShiraziLive has wired its callback (drawer built at startup).
+        # Before JarvisLive has wired its callback (drawer built at startup).
         ready, enabled = False, False
         try:
             from core.wake_word import is_ready
@@ -6531,44 +6474,29 @@ class MainWindow(QMainWindow):
 
     def _refresh_hud_btn(self):
         from memory.config_manager import get_hud_style
-        cur = get_hud_style()
-        # Three-way choice, not a switch — the label always names the live one.
+        face = get_hud_style() == "face"
+        # Neither state is "off", so both read as active — this is a choice
+        # between two things, not a switch with a disabled side.
         style = f"""
             QPushButton {{ background: {C.PANEL2}; color: {C.PRI};
                 border: 1px solid {C.BORDER_A}; border-radius: 3px;
                 text-align: left; padding: 0 8px; }}
             QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}"""
-        _labels = {"face": ("🧑  HUD: ANIMATED FACE",
-                            "An animated head that speaks your words and shows what SHIRAZI is "
-                            "doing. Tap to cycle the centrepiece."),
-                   "core": ("◉  HUD: NOORCORE",
-                            "The Living Intelligence Core — turns with the state and moves "
-                            "with your voice. Tap to cycle the centrepiece."),
-                   "3d":   ("🤖  HUD: 3D IRON MAN",
-                            "The Iron Man Mark III helmet — moves with your voice. "
-                            "Tap to cycle the centrepiece.")}
-        label, tip = _labels.get(cur, _labels["core"])
-        if cur != "3d":
-            # If 3D can't be offered, say why right on the button.
-            try:
-                from core.avatar3d import is_3d_available, availability_reason
-                if not is_3d_available():
-                    tip += f" (3D unavailable: {availability_reason()})"
-            except Exception:
-                pass
-        self._hud_btn.setText(label)
+        self._hud_btn.setText("🧑  HUD: ANIMATED FACE" if face
+                              else "◉  HUD: REACTOR CORE")
         self._hud_btn.setStyleSheet(style)
-        self._hud_btn.setToolTip(tip)
+        self._hud_btn.setToolTip(
+            "An animated head that speaks your words and shows what JARVIS is "
+            "doing. Tap to switch to the reactor core."
+            if face else
+            "A reactor core that turns with the state and moves with your voice. "
+            "Tap to switch to the animated head.")
 
     def _toggle_hud_style(self):
-        """Cycle the centrepiece: face -> core -> 3d -> face. All objects stay
-        in memory, so the change is instant and switching back costs nothing.
-        3d is skipped when unavailable (never a fake)."""
-        from memory.config_manager import (get_hud_style, save_hud_style,
-                                           is_3d_available)
-        order = ["face", "core"] + (["3d"] if is_3d_available() else [])
-        cur = get_hud_style()
-        want = order[(order.index(cur) + 1) % len(order)] if cur in order else "core"
+        """Swap the centrepiece. Both objects stay in memory, so the change is
+        instant and switching back costs nothing."""
+        from memory.config_manager import get_hud_style, save_hud_style
+        want = "core" if get_hud_style() == "face" else "face"
         save_hud_style(want)
         try:
             self.hud.hud_style = want
@@ -6576,163 +6504,9 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._refresh_hud_btn()
-        _names = {"face": "animated face", "core": "NoorCore",
-                  "3d": "3D Iron Man"}
-        self._log.append_log(f"SYS: HUD switched to the {_names.get(want, want)}.")
-
-    # ── Edge glow (MYRA ULTRA) ──────────────────────────────────────────
-    def _refresh_edge_glow_btn(self):
-        if not hasattr(self, "_edge_glow_btn"):
-            return
-        try:
-            from memory.config_manager import get_edge_glow_enabled
-            on = get_edge_glow_enabled()
-        except Exception:
-            on = False
-        self._edge_glow_btn.setText(
-            "🌈  EDGE GLOW: ON" if on else "🌈  EDGE GLOW: OFF")
-        self._edge_glow_btn.setToolTip(
-            "Animated screen-edge border in the assistant's state colour "
-            "(from MYRA ULTRA). Click to toggle.")
-
-    def _toggle_edge_glow(self):
-        try:
-            from memory.config_manager import (get_edge_glow_enabled,
-                                               save_edge_glow_enabled)
-            on = not get_edge_glow_enabled()
-            save_edge_glow_enabled(on)
-        except Exception:
-            on = False
-        if on:
-            self._ensure_edge_glow()
-        else:
-            glow = getattr(self, "_edge_glow", None)
-            if glow is not None:
-                glow.set_enabled(False)
-        self._refresh_edge_glow_btn()
-
-    def _ensure_edge_glow(self):
-        if getattr(self, "_edge_glow", None) is not None:
-            self._edge_glow.set_enabled(True)
-            return
-        try:
-            from core.edge_glow import EdgeGlow
-            self._edge_glow = EdgeGlow(
-                state_provider=lambda: self.hud._noor_state()
-                if hasattr(self.hud, "_noor_state") else "IDLE",
-                parent=self,
-            )
-        except Exception:
-            self._edge_glow = None
-
-    # ── Floating companion ──────────────────────────────────────────────────
-
-    def _refresh_companion_btn(self):
-        if not hasattr(self, "_companion_btn"):
-            return
-        from memory.config_manager import get_companion_enabled
-        on = get_companion_enabled()
-        _on = f"""
-            QPushButton {{ background: #06283a; color: {C.PRI};
-                border: 1px solid {C.PRI}; border-radius: 3px;
-                text-align: left; padding: 0 8px; }}
-            QPushButton:hover {{ color: {C.WHITE}; }}"""
-        _off = f"""
-            QPushButton {{ background: {C.PANEL2}; color: {C.TEXT_DIM};
-                border: 1px solid {C.BORDER_A}; border-radius: 3px;
-                text-align: left; padding: 0 8px; }}
-            QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}"""
-        self._companion_btn.setText(
-            "🛰  FLOATING CORE: ON" if on else "🛰  FLOATING CORE: OFF")
-        self._companion_btn.setStyleSheet(_on if on else _off)
-        self._companion_btn.setToolTip(
-            "The mini NoorCore that stays on screen while SHIRAZI is minimized. "
-            "Click it to bring SHIRAZI back; drag to move it."
-            if on else
-            "Show a floating mini NoorCore that stays visible while SHIRAZI "
-            "is minimized. Off by default.")
-
-    def _toggle_companion(self):
-        from memory.config_manager import (get_companion_enabled,
-                                           save_companion_enabled)
-        want = not get_companion_enabled()
-        save_companion_enabled(want)
-        self._refresh_companion_btn()
-        if want:
-            self._ensure_companion()
-            self._sync_companion_visibility()
-            self._log.append_log("SYS: Floating core enabled — it appears "
-                                 "whenever SHIRAZI is minimized.")
-        else:
-            self._destroy_companion()
-            self._log.append_log("SYS: Floating core disabled.")
-
-    def _ensure_companion(self):
-        if getattr(self, "_companion", None) is not None:
-            return
-        try:
-            from core.companion import CompanionWindow
-            from memory.config_manager import get_theme
-            comp = CompanionWindow(
-                state_provider=lambda: self.hud._noor_state()
-                if hasattr(self.hud, "_noor_state") else "IDLE",
-                amp_provider=lambda: getattr(self.hud, "_last_amp", 0.0),
-                theme_provider=get_theme,
-            )
-            comp.restore_requested.connect(self._on_companion_restore)
-            comp.voice_toggled.connect(self._on_companion_voice)
-            comp.hide_requested.connect(self._toggle_companion)
-            self._companion = comp
-        except Exception:
-            self._companion = None
-
-    def _destroy_companion(self):
-        comp = getattr(self, "_companion", None)
-        self._companion = None
-        try:
-            if comp is not None:
-                comp.hide()
-                comp.deleteLater()
-        except Exception:
-            pass
-
-    def _sync_companion_visibility(self):
-        comp = getattr(self, "_companion", None)
-        if comp is None:
-            return
-        try:
-            from memory.config_manager import get_companion_enabled
-            minimized = bool(self.windowState() & Qt.WindowState.WindowMinimized)
-            if get_companion_enabled() and minimized:
-                comp.show()
-            else:
-                comp.hide()
-        except Exception:
-            pass
-
-    def _on_companion_restore(self):
-        try:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-
-    def _on_companion_voice(self, on: bool):
-        try:
-            if self.on_wake_toggle:
-                self.on_wake_toggle(on)
-        except Exception:
-            pass
-
-    def changeEvent(self, e):
-        try:
-            from PyQt6.QtCore import QEvent
-            if e.type() == QEvent.Type.WindowStateChange:
-                self._sync_companion_visibility()
-        except Exception:
-            pass
-        super().changeEvent(e)
+        self._log.append_log(
+            "SYS: HUD switched to the animated face." if want == "face"
+            else "SYS: HUD switched to the reactor core.")
 
     def _toggle_ptt(self):
         from memory.config_manager import (get_push_to_talk_enabled,
@@ -6815,7 +6589,7 @@ class MainWindow(QMainWindow):
                 self._wake_dl_sig.emit(ok, msg)
             threading.Thread(target=_work, daemon=True).start()
             return
-        # Already downloaded → just flip enabled/disabled through ShiraziLive.
+        # Already downloaded → just flip enabled/disabled through JarvisLive.
         if self.on_wake_toggle:
             try:
                 self.on_wake_toggle(not st["enabled"])
@@ -6867,7 +6641,7 @@ class MainWindow(QMainWindow):
             self._customize_overlay.hide()
         cw = self.centralWidget()
         ov = CustomizeOverlay(
-            cfg.get("assistant_name", "SHIRAZI") or "SHIRAZI",
+            cfg.get("assistant_name", "JARVIS") or "JARVIS",
             cfg.get("user_name", ""),
             cfg.get("ui_color", "") or DEFAULT_UI_COLOR,
             cfg.get("voice_name", ""),
@@ -6894,11 +6668,11 @@ class MainWindow(QMainWindow):
     def _apply_name_update(self, name: str, user_name: str, ui_color: str = "",
                            voice: str = ""):
         """Update all name/theme-dependent UI elements and persist to config."""
-        self._assistant_name = name.strip() or "SHIRAZI"
+        self._assistant_name = name.strip() or "JARVIS"
         display = self._assistant_name.upper()
         self.setWindowTitle(f"{display} — {APP_VERSION}")
         self._title_lbl.setText(display)
-        if display in ("SHIRAZI", "J.A.R.V.I.S"):
+        if display in ("JARVIS", "J.A.R.V.I.S"):
             self._sub_lbl.setText("Just A Rather Very Intelligent System")
         else:
             self._sub_lbl.setText("Personal AI Assistant")
@@ -6965,81 +6739,64 @@ class MainWindow(QMainWindow):
         if self.on_audio_device_change:
             self.on_audio_device_change()
 
-    # ── Memory panel ─────────────────────────────────────────────────────────
+    # ── Engine & providers ───────────────────────────────────────────────────
 
-    def _open_memory_panel(self):
-        ov = MemoryOverlay(parent=self.centralWidget())
-        self._centre_overlay(ov)
-        self._memory_overlay = ov
-
-    # ── Irreversible-action confirmation ─────────────────────────────────────
-
-    def _show_confirm_banner(self, title: str, detail: str):
-        self._hide_confirm_banner()
-        ov = ConfirmBanner(title, detail, parent=self.centralWidget())
-        ov.answered.connect(self._on_confirm_answered)
-        self._centre_overlay(ov)
-        self._confirm_overlay = ov
-
-    # ── OMNICONTROL approval cards ────────────────────────────────────────────
-
-    def _poll_approvals(self) -> None:
-        """Show a HUD card for the oldest pending gateway approval request."""
+    # ── Edge glow (MYRA ULTRA) ──────────────────────────────────────────
+    def _edge_glow_state(self) -> str:
+        """Map the live HUD state to an edge-glow state name."""
         try:
-            if self._approval_overlay is not None and self._approval_overlay.isVisible():
-                return  # one card at a time
             from core.omnicontrol import gateway as _gw
-            pending = _gw.list_pending()
-            if not pending:
-                return
-            ov = ApprovalCard(pending[0], parent=self.centralWidget())
-            ov.resolved.connect(self._on_approval_resolved)
-            self._centre_overlay(ov)
-            self._approval_overlay = ov
-        except Exception:
-            pass  # approvals are best-effort in the HUD; dashboard is canonical
-
-    def _on_approval_resolved(self, _rid: str, decision: str) -> None:
-        self._approval_overlay = None
-        try:
-            self._log.append_log(f"SYS: Permission request {decision}.")
+            if _gw.list_pending():
+                return "AWAITING_APPROVAL"
         except Exception:
             pass
+        s = str(getattr(self.hud, "state", "IDLE") or "IDLE").upper()
+        if s in ("THINKING", "PROCESSING"):
+            return "THINKING"
+        if s in ("LISTENING", "SPEAKING", "ERROR"):
+            return s
+        return "IDLE"
 
-    def _hide_confirm_banner(self):
-        ov = getattr(self, "_confirm_overlay", None)
-        if ov is not None:
-            ov.hide()
-            ov.deleteLater()
-            self._confirm_overlay = None
-
-    def _on_confirm_answered(self, accepted: bool):
-        # Tear the banner down first: core.confirm.resolve() may be about to
-        # shut the machine down, and a live widget mid-callback is not where you
-        # want to be when that happens.
-        self._hide_confirm_banner()
+    def _refresh_edge_glow_btn(self):
+        if not hasattr(self, "_edge_glow_btn"):
+            return
         try:
-            from core.confirm import resolve
-            resolve(bool(accepted))
-        except Exception as e:
-            self._log.append_log(f"ERR: Confirmation failed — {e}")
+            from memory.config_manager import get_edge_glow_enabled
+            on = get_edge_glow_enabled()
+        except Exception:
+            on = False
+        self._edge_glow_btn.setText(
+            "🌈  EDGE GLOW: ON" if on else "🌈  EDGE GLOW: OFF")
+        self._edge_glow_btn.setToolTip(
+            "Animated screen-edge border in the assistant's state colour "
+            "(from MYRA ULTRA). Click to toggle.")
 
-    def _open_plugin_manager(self):
-        plugins = self.get_plugins() if self.get_plugins else []
-        cw = self.centralWidget()
-        ov = PluginManagerOverlay(plugins, parent=cw)
-        ow = PluginManagerOverlay._OW
-        # Cap the height so the overlay never runs off-screen; the plugin
-        # rows scroll inside (see PluginManagerOverlay).
-        oh = min(560, cw.height() - 16)
-        ov.setGeometry(
-            (cw.width()  - ow) // 2,
-            (cw.height() - oh) // 2,
-            ow, oh,
-        )
-        ov.show()
-        ov.raise_()
-        self._plugin_manager_overlay = ov   # keep a reference so it isn't GC'd
+    def _toggle_edge_glow(self):
+        try:
+            from memory.config_manager import (get_edge_glow_enabled,
+                                               save_edge_glow_enabled)
+            on = not get_edge_glow_enabled()
+            save_edge_glow_enabled(on)
+        except Exception:
+            on = False
+        if on:
+            self._ensure_edge_glow()
+        else:
+            glow = getattr(self, "_edge_glow", None)
+            if glow is not None:
+                glow.set_enabled(False)
+        self._refresh_edge_glow_btn()
+
+    def _ensure_edge_glow(self):
+        if getattr(self, "_edge_glow", None) is not None:
+            self._edge_glow.set_enabled(True)
+            return
+        try:
+            from core.edge_glow import EdgeGlow
+            self._edge_glow = EdgeGlow(state_provider=self._edge_glow_state,
+                                       parent=self)
+        except Exception:
+            self._edge_glow = None
 
     def _open_providers(self):
         """Open the engine panel. Everything it needs is imported on this call.
@@ -7072,6 +6829,54 @@ class MainWindow(QMainWindow):
         self._log.append_log("SYS: Engine settings saved — reconnecting.")
         if self.on_audio_device_change:
             self.on_audio_device_change()
+
+    # ── Memory panel ─────────────────────────────────────────────────────────
+
+    def _open_memory_panel(self):
+        ov = MemoryOverlay(parent=self.centralWidget())
+        self._centre_overlay(ov)
+        self._memory_overlay = ov
+
+    # ── Irreversible-action confirmation ─────────────────────────────────────
+
+    def _show_confirm_banner(self, title: str, detail: str):
+        self._hide_confirm_banner()
+        ov = ConfirmBanner(title, detail, parent=self.centralWidget())
+        ov.answered.connect(self._on_confirm_answered)
+        self._centre_overlay(ov)
+        self._confirm_overlay = ov
+
+    def _hide_confirm_banner(self):
+        ov = getattr(self, "_confirm_overlay", None)
+        if ov is not None:
+            ov.hide()
+            ov.deleteLater()
+            self._confirm_overlay = None
+
+    def _on_confirm_answered(self, accepted: bool):
+        # Tear the banner down first: core.confirm.resolve() may be about to
+        # shut the machine down, and a live widget mid-callback is not where you
+        # want to be when that happens.
+        self._hide_confirm_banner()
+        try:
+            from core.confirm import resolve
+            resolve(bool(accepted))
+        except Exception as e:
+            self._log.append_log(f"ERR: Confirmation failed — {e}")
+
+    def _open_plugin_manager(self):
+        plugins = self.get_plugins() if self.get_plugins else []
+        cw = self.centralWidget()
+        ov = PluginManagerOverlay(plugins, parent=cw)
+        ov.adjustSize()
+        ov.setGeometry(
+            (cw.width()  - ov.width())  // 2,
+            (cw.height() - ov.height()) // 2,
+            ov.width(), ov.height(),
+        )
+        ov.show()
+        ov.raise_()
+        self._plugin_manager_overlay = ov   # keep a reference so it isn't GC'd
 
     def _open_plugin_settings(self):
         sections = self.get_plugin_settings() if self.get_plugin_settings else []
@@ -7171,23 +6976,6 @@ class MainWindow(QMainWindow):
     def _apply_state(self, state: str):
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
-        # NoorCore terminal states — driven by real provider/connection events.
-        s = (state or "").upper()
-        self.hud._noor_error = s in ("ERROR", "FAILED")
-        self.hud._noor_offline = s in ("OFFLINE", "DISCONNECTED")
-
-    def _apply_degraded(self, active: bool, provider: str):
-        """Phase 3.1: DEGRADED MODE indicator in the HUD."""
-        try:
-            if active:
-                self._degraded_label.setText(
-                    f"⚠ DEGRADED — text only ({provider})" if provider
-                    else "⚠ DEGRADED — text only")
-                self._degraded_label.show()
-            else:
-                self._degraded_label.hide()
-        except AttributeError:
-            pass  # label not built yet
 
     def _check_config(self) -> bool:
         if not API_FILE.exists(): return False
@@ -7200,7 +6988,7 @@ class MainWindow(QMainWindow):
     def _show_setup(self):
         ov = SetupOverlay(self.centralWidget())
         cw = self.centralWidget()
-        ow, oh = 460, 520
+        ow, oh = 460, 390
         ov.setGeometry(
             (cw.width()  - ow) // 2,
             (cw.height() - oh) // 2,
@@ -7210,38 +6998,19 @@ class MainWindow(QMainWindow):
         ov.show()
         self._overlay = ov
 
-    def _on_setup_done(self, payload: dict):
-        key = (payload.get("gemini") or "").strip()
-        groq = (payload.get("groq") or "").strip()
-        or_key = (payload.get("openrouter") or "").strip()
-        os_name = payload.get("os") or "windows"
+    def _on_setup_done(self, key: str, os_name: str):
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        # Merge into the existing file — never wipe keys the user didn't touch.
-        try:
-            d = json.loads(API_FILE.read_text(encoding="utf-8")) \
-                if API_FILE.exists() else {}
-        except Exception:
-            d = {}
-        d["gemini_api_key"] = key
-        d["os_system"] = os_name
-        if groq:
-            d["groq_api_key"] = groq
-        if or_key:
-            d["openrouter_api_key"] = or_key
-        API_FILE.write_text(json.dumps(d, indent=4), encoding="utf-8")
+        API_FILE.write_text(
+            json.dumps({"gemini_api_key": key, "os_system": os_name}, indent=4),
+            encoding="utf-8",
+        )
         self._ready = True
         if self._overlay:
             self._overlay.hide()
             self._overlay = None
         self._apply_state("LISTENING")
-        self._assistant_name = _read_full_config().get("assistant_name", "SHIRAZI") or "SHIRAZI"
-        extras = []
-        if groq:
-            extras.append("Groq")
-        if or_key:
-            extras.append("OpenRouter")
-        extra_txt = f" (+{'/'.join(extras)} fallback)" if extras else ""
-        self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}{extra_txt}. {self._assistant_name} online.")
+        self._assistant_name = _read_full_config().get("assistant_name", "JARVIS") or "JARVIS"
+        self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. {self._assistant_name} online.")
 
 
 class _RootShim:
@@ -7253,7 +7022,7 @@ class _RootShim:
         pass
 
 
-class ShiraziUI:
+class JarvisUI:
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
@@ -7398,7 +7167,7 @@ class ShiraziUI:
 
     def push_visemes(self, frames, hop: float, at: float) -> None:
         """Thread-safe: post a schedule of (level, openness, width) mouth frames
-        for SHIRAZI's own speech. `at` is the wall-clock time the batch begins to
+        for JARVIS's own speech. `at` is the wall-clock time the batch begins to
         sound, not the time of the call. See HudCanvas.push_visemes()."""
         try:
             self._win.hud.push_visemes(frames, hop, at)
@@ -7411,19 +7180,22 @@ class ShiraziUI:
     def set_state(self, state: str):
         self._win._state_sig.emit(state)
 
-    def write_log(self, text: str):
-        self._win._log_sig.emit(text)
-
     def set_degraded_mode(self, active: bool, provider_label: str = ""):
-        """Phase 3.1: show/clear the DEGRADED MODE indicator in the HUD.
-        Thread-safe via signal."""
+        """Shirazi compat: show/clear the DEGRADED MODE indicator.
+
+        LVI's MainWindow has no degraded banner widget, so this logs the
+        transition (and uses the banner signal if a future window grows
+        one). main.py calls this when the Live session drops to the
+        text/provider fallback and when it recovers."""
         try:
             self._win._degraded_sig.emit(active, provider_label)
         except AttributeError:
-            # _degraded_sig wired in MainWindow.__init__; fall back to log.
             self.write_log(
                 f"SYS: {'DEGRADED MODE' if active else 'voice link restored'}"
                 + (f" ({provider_label})" if provider_label else ""))
+
+    def write_log(self, text: str):
+        self._win._log_sig.emit(text)
 
     def wait_for_api_key(self):
         while not self._win._ready:
@@ -7438,7 +7210,7 @@ class ShiraziUI:
 
         `grade(question, given)` decides each answer — the plugin supplies it so
         the marking rules live with the questions rather than being duplicated
-        here. Returning None from it means "SHIRAZI should judge this one", which
+        here. Returning None from it means "JARVIS should judge this one", which
         is how open answers and near-miss gap-fills are handled.
 
         Returns immediately: the user answers at their own pace and the finished
@@ -7479,7 +7251,7 @@ class ShiraziUI:
         together and kept in step.
 
         Muted by default, and that is a decision rather than a default: a
-        soundtrack talking over SHIRAZI is the one way this could make the
+        soundtrack talking over JARVIS is the one way this could make the
         assistant worse. The user turns sound on from the header button or by
         asking, and closes it the same two ways.
         """
@@ -7515,3 +7287,13 @@ class ShiraziUI:
     def stop_speaking(self):
         if not self.muted:
             self.set_state("LISTENING")
+
+
+# ── Shirazi LVI ─────────────────────────────────────────────────────────────
+# This window IS Mark LVI's HUD (FatihMakes, CC BY-NC 4.0), adopted wholesale
+# at the user's direction on 2026-10-20 — it replaces the Mark-LV-derived
+# Shirazi HUD and its Iron Man 3D avatar entirely. Shirazi's backend
+# (main.py, the OmniControl gateway, plugins, providers) drives it through
+# the JarvisUI interface; the alias below keeps `from ui import ShiraziUI`
+# working, and set_degraded_mode above is the one Shirazi-only addition.
+ShiraziUI = JarvisUI
