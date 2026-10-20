@@ -51,12 +51,32 @@ LOW). `core/prompt.txt` also gained MYRA's vision anti-hallucination rule.
 Deliberately **not** taken from MYRA: the Wi-Fi password reader and
 confirmation-free WhatsApp sending — both clash with OmniControl.
 
+## HUD wave (same day, at the user's direction)
+
+- **Mark LVI's HUD panel is in.** `ProvidersOverlay` + `_ScrollSafeCombo`
+  were ported into `ui.py` (byte-identical class; Shirazi's palette and
+  `_HudOverlay` base already matched), together with the providers block
+  of LVI's `memory/config_manager.py` (mode / pipeline / per-provider
+  creds / sidecar, incl. the one-write `save_providers`). The SETUP
+  drawer gained the **🔌 ENGINE & PROVIDERS** button; applying rebuilds
+  the session through the same callback as an audio-device change.
+  Shirazi's own HUD was NOT replaced wholesale — LVI's canvas is the
+  same HUD family minus Shirazi's NoorCore / 3D avatar / OmniControl
+  cards, so the panel was transplanted, not the window.
+- **MYRA's edge glow is in** as `core/edge_glow.py`: four click-through
+  strips + a badge, conical-gradient colours travelling the screen edge,
+  `WDA_EXCLUDEFROMCAPTURE` so it never pollutes vision frames. Keyed to
+  the 8 NoorCore states via the same `_noor_state()` the HUD uses;
+  badge shows for AWAITING_APPROVAL ("Approval needed") and ERROR.
+  Toggle in the CONTROLS drawer (🌈 EDGE GLOW), persisted, opt-in.
+  MYRA's floating orb was NOT ported: Shirazi's floating NoorCore
+  companion already fills that role.
+
 ## Follow-ups worth doing
 
-1. **Settings panel for providers** — LVI's ⚙ → ENGINE & PROVIDERS overlay
-   (`ui.py` + `memory/config_manager.py` helpers) so the engine can be
-   chosen in the UI instead of by config; then wire `engine_pipeline`
-   into the degraded-chat path.
+1. ~~Settings panel for providers~~ — **done** (HUD wave above). Next:
+   wire `engine_pipeline` into the degraded-chat path so a configured
+   pipeline actually takes conversations.
 2. **`core/appidentity.py`** — LVI's fuzzy app index + "raise, don't
    duplicate" window focusing for `open_app`.
 3. Remaining plain-string returns in `computer_settings.py` (type_text,
