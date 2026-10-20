@@ -1,6 +1,6 @@
-# SHIRAZI LV — Windows Setup Guide
+# SHIRAZI LVI — Windows Setup Guide
 
-SHIRAZI LV is a pure-Python desktop assistant (PyQt6 HUD + Gemini Live voice).
+SHIRAZI LVI is a pure-Python desktop assistant (PyQt6 HUD + Gemini Live voice).
 No Electron, no packaging, no build step — it runs directly from source.
 
 ## Requirements
