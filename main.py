@@ -88,6 +88,7 @@ from core                      import confirm as confirm_gate
 from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
+from core.conversation        import BargeInVoter, ToolStartingWatchdog
 from core.viseme               import VisemeStream
 from core.wake_word            import (
     WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
@@ -570,6 +571,12 @@ class ShiraziLive:
         self._ptt                  = None    # core.hotkey.PushToTalk
         self._out_level            = 0.0     # level of the audio being played right now
         self._echo                 = EchoGuard()
+        self._barge_voter          = BargeInVoter(lambda: self._echo.required_blocks)
+        try:
+            from memory.config_manager import get_barge_in_enabled as _gbie
+            self._barge_in_enabled = bool(_gbie())
+        except Exception:
+            self._barge_in_enabled = False
         # `stream.write()` returns when the buffer accepts the audio, not when the
         # speaker has finished with it, so sound is still in the room after the
         # speaking flag drops. Streaming the microphone during that gap is how an
@@ -791,6 +798,31 @@ class ShiraziLive:
         except Exception as e:
             print(f"[PluginSay] {e}")
 
+    def _say_tool_starting(self, text: str) -> None:
+        """Inject a [TOOL_STARTING] turn into the Live session (watchdog).
+
+        Same channel plugin_say uses; the prompt's [TAGGED MESSAGES] section
+        tells the model to answer it with one short sentence and nothing
+        else. No-op without a session (degraded mode has no one to speak).
+        """
+        if not self.session:
+            return
+
+        async def _send():
+            try:
+                await self.session.send_client_content(
+                    turns={"role": "user", "parts": [{"text": text}]},
+                    turn_complete=True,
+                )
+            except Exception as e:
+                print(f"[ToolStarting] {e}")
+
+        try:
+            asyncio.get_running_loop().create_task(_send())
+        except RuntimeError:
+            pass
+
+
     def request_reconnect(self, keep_context: bool = True, reason: str = ""):
         """Thread-safe: ask the run loop to tear down and rebuild the Live
         session. Called from the Qt thread. No-op until the async loop and
@@ -965,6 +997,8 @@ class ShiraziLive:
     def set_speaking(self, value: bool):
         with self._speaking_lock:
             self._is_speaking = value
+        if value and hasattr(self, "_barge_voter"):
+            self._barge_voter.reset()
         if value:
             self._tail_until = 0.0
         else:
@@ -1480,12 +1514,23 @@ class ShiraziLive:
             if shirazi_speaking:
                 # Nothing is streamed while SHIRAZI talks.
                 #
-                # Interrupting by voice used to live here: `EchoGuard` can pick a
-                # user out from under our own echo, and `core/echo.py` still does
-                # that for the tail below. Re-enabling is small — classify each
-                # block here and call interrupt() after `required_blocks` of
-                # agreement — but it depends on the listener's room, so it stays
-                # out until it can be tried on real hardware.
+                # Nothing is streamed while SHIRAZI talks.
+                #
+                # Voice barge-in lives here again, behind the barge_in_enabled
+                # config flag (default off): it depends on the listener's room
+                # and speakers, so the user opts in and tries it on their own
+                # hardware. EchoGuard classifies each block (is this the user,
+                # or our own echo?); the voter demands required_blocks of
+                # consecutive agreement before interrupt() fires, so a cough
+                # or a keystroke cannot cut a sentence short.
+                if self._barge_in_enabled:
+                    try:
+                        heard = self._echo.is_user_speech(
+                            indata, SEND_SAMPLE_RATE, _pcm_level(indata))
+                        if self._barge_voter.feed(bool(heard)):
+                            loop.call_soon_threadsafe(self.interrupt)
+                    except Exception:
+                        pass
                 return
 
             # ── Echo tail ────────────────────────────────────────────────────
@@ -1659,6 +1704,15 @@ class ShiraziLive:
                     if response.server_content:
                         sc = response.server_content
 
+                        if getattr(sc, "interrupted", False):
+                            # The server cut the model's turn short (the user
+                            # barged in). Drop everything queued for that turn
+                            # and clear the transcript buffers, so none of the
+                            # unsaid sentence is played or logged as spoken.
+                            self.interrupt()
+                            in_buf  = []
+                            out_buf = []
+
                         if sc.output_transcription and sc.output_transcription.text:
                             txt = _clean_transcript(sc.output_transcription.text)
                             # A turn that involves a tool call passes through
@@ -1742,7 +1796,13 @@ class ShiraziLive:
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[SHIRAZI] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
+                            _wd = ToolStartingWatchdog(self._say_tool_starting)
+                            if not self.ui.muted and fc.name != "screen_process":
+                                _wd.start(fc.name)
+                            try:
+                                fr = await self._execute_tool(fc)
+                            finally:
+                                _wd.cancel()
                             fn_responses.append(fr)
                         await self.session.send_tool_response(
                             function_responses=fn_responses

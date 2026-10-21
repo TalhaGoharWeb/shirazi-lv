@@ -95,6 +95,29 @@ whole window replaced. Done:
 - The edge glow survived the swap: its toggle lives in LVI's CONTROLS
   drawer, fed by the LVI canvas state (+ gateway approval check).
 
+## Friendly conversation pack (2026-10-21)
+
+Goal: conversation that feels like a friend, ChatGPT-voice style.
+
+- **core/prompt.txt** — a new [CONVERSATION] section (small talk is part of
+  the job; greet return visits with a remembered thread; notice the person;
+  genuine follow-ups allowed, reflex closers banned; listening sounds;
+  speak like a person, not a document — headline first, detail on offer).
+  [VOICE] gained the warmth-in-specifics rule. [LANGUAGE]'s hard
+  "never mix languages" rules were replaced with **mirror the user's own
+  mix**. [JUDGEMENT] gained the repair carve-out: glide over garbled words,
+  but never guess a garbled name/number that changes the outcome — ask one
+  short question instead.
+- **TOOL_STARTING watchdog** (`core/conversation.py` + main.py) — the
+  prompt always documented this tag but nothing sent it. Now any tool
+  still running after 2.5 s triggers one short spoken sentence in the
+  user's language, so a slow tool no longer leaves dead air.
+- **Voice barge-in, opt-in** — EchoGuard classification + BargeInVoter
+  (consecutive-block voting) in the mic path, behind the
+  `barge_in_enabled` config flag (default off; room-dependent, to be
+  tried on real hardware). Server-side `interrupted` turns now drain
+  queued audio and clear buffers immediately.
+
 ## Follow-ups worth doing
 
 1. ~~Settings panel for providers~~ — **done** (HUD wave above). Next:

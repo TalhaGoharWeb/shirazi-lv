@@ -475,6 +475,19 @@ def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:
 
 # ── Floating companion (opt-in, off by default) ─────────────────────────────
 
+def get_barge_in_enabled() -> bool:
+    """Voice barge-in: cut SHIRAZI off by speaking over it (EchoGuard-voted).
+
+    Off by default — whether it behaves depends on the room and speakers,
+    so the user opts in (set "barge_in_enabled": true in the config) and
+    tries it on their own hardware. Read once at startup."""
+    return bool(load_api_keys().get("barge_in_enabled", False))
+
+
+def save_barge_in_enabled(enabled: bool) -> None:
+    _save_flag("barge_in_enabled", bool(enabled))
+
+
 def get_edge_glow_enabled() -> bool:
     """Screen edge glow (from MYRA ULTRA). Off by default; the user opts in."""
     return bool(load_api_keys().get("edge_glow_enabled", False))
