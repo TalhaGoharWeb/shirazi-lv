@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import re
 import sys
 import traceback
@@ -34,6 +35,27 @@ def _opt_upper(value, allowed: tuple[str, ...]) -> Optional[str]:
     return v if v in allowed else None
 
 
+def _read_manifest(py_file: str) -> Optional[dict]:
+    """Read plugin.json next to the plugin .py. Returns the manifest dict,
+    or None when absent/malformed. Never raises, never blocks loading."""
+    try:
+        mp = Path(py_file).with_suffix(".json")
+        # Only accept the exact '<name>.json' sibling, not arbitrary files.
+        if mp.name != Path(py_file).stem + ".json":
+            return None
+        if not mp.exists():
+            return None
+        data = json.loads(mp.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        # Keep only known fields; ignore the rest (forward-compatible).
+        keep = ("version", "author", "permissions", "min_app_version",
+                "description", "homepage")
+        return {k: data[k] for k in keep if k in data}
+    except Exception:
+        return None
+
+
 @dataclass
 class PluginRecord:
     name: str
@@ -46,6 +68,7 @@ class PluginRecord:
     settings: Optional[dict] = None   # optional PLUGIN_SETTINGS schema (config fields)
     behavior: Optional[str] = None    # None = the API's default (blocking)
     scheduling: Optional[str] = None  # None = the API's default (WHEN_IDLE)
+    manifest: Optional[dict] = None   # Stage C: plugin.json metadata
 
 
 class PluginRegistry:
@@ -103,11 +126,27 @@ class PluginRegistry:
         except ImportError:
             pass  # omnicontrol unavailable (should not happen in production)
         try:
-            return _call_run(rec.run, parameters, player, session_memory) or "Done."
+            result = _call_run(rec.run, parameters, player, session_memory) or "Done."
+            # Stage C: success resets the failure counter.
+            try:
+                from memory.config_manager import record_plugin_success
+                record_plugin_success(name)
+            except Exception:
+                pass
+            return result
         except Exception as e:
             self._logger(f"Plugin '{name}' crashed during run(): {e}")
             self._notify(f"Plugin '{name}' failed — see the console for details.")
             traceback.print_exc()
+            # Stage C: failure isolation — 5 consecutive crashes auto-disable.
+            try:
+                from memory.config_manager import record_plugin_failure
+                h = record_plugin_failure(name, str(e))
+                if h.get("auto_disabled"):
+                    self._notify(f"Plugin '{name}' auto-disabled after "
+                                 f"{h.get('failures')} consecutive failures.")
+            except Exception:
+                pass
             return f"Sir, the '{name}' plugin failed: {e}"
 
     # -- called by ui.py's settings tab to render per-plugin config forms --
@@ -198,10 +237,16 @@ def _validate(module, filename: str) -> PluginRecord:
     if not (isinstance(settings, dict) and isinstance(settings.get("fields"), list)):
         settings = None
 
+    # Stage C: optional manifest (plugin.json next to the .py). Declares
+    # version, author, requested permissions and compatibility. A missing or
+    # malformed manifest never blocks loading — builtins predate manifests.
+    manifest = _read_manifest(filename)
+
     return PluginRecord(name=name, description=description.strip(), parameters=parameters,
                          run=run_fn, file=filename, valid=True, error="", settings=settings,
                          behavior=_opt_upper(plugin_meta.get("behavior"), _BEHAVIORS),
-                         scheduling=_opt_upper(plugin_meta.get("scheduling"), _SCHEDULING))
+                         scheduling=_opt_upper(plugin_meta.get("scheduling"), _SCHEDULING),
+                         manifest=manifest)
 
 
 def _load_error(path: Path, plugins_dir: Path, exc: Exception) -> str:

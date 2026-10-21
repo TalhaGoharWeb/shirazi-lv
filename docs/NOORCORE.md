@@ -7,39 +7,50 @@ replacing the old fallback reactor core as the default HUD visual.
 
 - **Core** (default) — NoorCore abstract intelligence sphere.
 - **Face** — the holographic head (unchanged).
-- **3D** — reserved for the 3D avatar track; currently unavailable. The HUD
-  falls back to Core and says so — it never fakes 3D.
 
 Switching modes never interrupts a conversation or task: all modes share the
 same assistant state, voice events, task status, and permission system.
 
-## Themes (Settings → Theme, persisted)
+## Themes (Settings → ◉ NOORCORE, persisted)
 
 - **NoorCore Dark** (default): obsidian `#080D14`, electric cyan `#38BDF8`,
   emerald `#20D6B0`, restrained gold `#E9BD68`.
 - **Classic Shirazi**: the previous palette, preserved.
+- **High Contrast**: accessibility theme (also auto-applied by the
+  high-contrast accessibility setting).
 
-Theme changes never affect functionality or security behavior.
+Theme changes never affect functionality or security behavior. The ◉ NOORCORE
+settings panel shows a live mini-core preview that re-renders instantly when
+you pick a theme, plus reduced-motion and text-size controls.
 
-## The 8 states (all driven by real events)
+## The 9 states (all driven by real events)
 
 | State | Source |
 |---|---|
 | IDLE | nothing happening — slow breathing, no fake activity |
 | LISTENING | mic open; audio ring follows real mic amplitude |
-| THINKING | model request in flight; faster orbitals |
+| THINKING | model request in flight; faster orbitals (`set_thinking_depth(1/2)` for visibly deeper work) |
 | SPEAKING | TTS playing; ring follows real playback amplitude |
-| EXECUTING | an OMNICONTROL orchestrator task is RUNNING; ring shows real progress when measurable, honest sweep otherwise |
-| AWAITING_APPROVAL | gateway has pending approval requests (steady amber) + approval card |
-| ERROR | provider/operation failure (set via `set_state("ERROR")`) |
-| OFFLINE | connection lost (set via `set_state("OFFLINE")`) |
+| EXECUTING | an OMNICONTROL orchestrator task is RUNNING; ring shows REAL step progress (from the task's step counts), honest sweep otherwise |
+| AWAITING_APPROVAL | gateway has pending approval requests + approval card; the amber pulse quickens gently the longer it waits (real elapsed time) |
+| ERROR | provider/operation failure |
+| OFFLINE | connection lost |
+| DEGRADED | Live voice is down — text-only fallback is serving (desaturated dashed ring; never pretends voice works) |
+
+Every state change fires a brief transition pulse (expanding ring, ~0.6s) so
+the eye catches the change. The status line under the core names the state in
+plain words ("Listening…", "Needs your approval", "Working… 42%").
 
 ## Approval card
 
-When a HIGH-risk tool needs approval, a card appears on the HUD with
-**Allow Once / Allow Always / Deny**. The decision goes straight to
+When a tool needs approval, a card appears on the HUD with
+**Allow Once / Allow Always / Deny**. The card is color-coded by risk tier
+(LOW cyan / MODERATE gold / HIGH amber / CRITICAL red) and shows a live
+"waiting mm:ss" timer. The decision goes straight to
 `gateway.resolve_pending()` — the model cannot approve itself. The dashboard
-Permissions view remains the canonical surface.
+Permissions view remains the canonical surface. The floating companion shows
+an amber badge with the pending count, so approvals aren't missed while the
+main window is minimized.
 
 ## For developers
 

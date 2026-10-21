@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 try:
     # Must import before any QApplication exists (QtWebEngine requirement);
-    # also fixes test-ordering when this module runs before test_avatar3d.
+    # QtWebEngineWidgets must be imported before QApplication.
     from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
 except Exception:
     pass
@@ -29,6 +29,26 @@ def app():
     if _app is None:
         _app = QApplication([])
     return _app
+
+
+# Isolate secrets: in-memory backend so tests never touch the
+# real OS store or disk.
+try:
+    from core import secrets_store as _ss
+    _ss.use_memory_backend()
+except Exception:
+    pass
+
+# Per-test isolation: fresh secrets for every test.
+def _reset_secrets():
+    try:
+        _ss.use_memory_backend()
+    except Exception:
+        pass
+
+
+
+
 
 
 class ApiKeyFields(unittest.TestCase):
@@ -73,10 +93,12 @@ class ApiKeyFields(unittest.TestCase):
         _u._read_full_config = lambda: {}
         win._on_setup_done({"gemini": "AIza-new", "groq": "",
                             "openrouter": "sk-or-new", "os": "windows"})
-        d = cm.load_api_keys()
-        self.assertEqual(d["gemini_api_key"], "AIza-new")
-        self.assertEqual(d["groq_api_key"], "gsk-keep")  # untouched, not wiped
-        self.assertEqual(d["openrouter_api_key"], "sk-or-new")
+        # Stage F: secrets land in the OS store, not the plaintext file.
+        from core import secrets_store as _ss
+        self.assertEqual(_ss.get_secret("gemini_api_key"), "AIza-new")
+        self.assertEqual(_ss.get_secret("openrouter_api_key"), "sk-or-new")
+        # Untouched keys are not wiped (groq was "gsk-keep", still there).
+        self.assertEqual(cm.get_groq_key(), "gsk-keep")
 
     def test_ladder_reads_stored_keys(self):
         from memory import config_manager as cm

@@ -801,11 +801,13 @@
     async function omniRefresh() {
       _omniPanel.innerHTML = '<div class="omni-card"><h3>Loading…</h3></div>';
       try {
-        const [st, pend, tasks, auditJ] = await Promise.all([
+        const [st, pend, tasks, auditJ, capsJ, plugJ] = await Promise.all([
           _omniApi('/api/omni/state'),
           _omniApi('/api/omni/pending'),
           _omniApi('/api/omni/tasks'),
           _omniApi('/api/omni/audit?limit=30'),
+          _omniApi('/api/capabilities'),
+          _omniApi('/api/plugins/health'),
         ]);
         if (!st.ok) throw new Error(st.error || 'state failed');
         const s = st.state;
@@ -873,6 +875,44 @@
         }
         h += '</div>';
 
+        // Capabilities
+        const caps = (capsJ.ok && capsJ.capabilities) || [];
+        const riskCount = {};
+        for (const c of caps) riskCount[c.risk] = (riskCount[c.risk] || 0) + 1;
+        h += '<div class="omni-card"><h3>Capabilities (' + caps.length + ')</h3>';
+        h += '<div class="omni-row"><span class="meta">' +
+             Object.entries(riskCount).map(([k, v]) => k + ': ' + v).join(' · ') +
+             '</span></div>';
+        const badCaps = caps.filter(c => c.health === 'failed' || c.health === 'degraded');
+        for (const c of badCaps.slice(0, 8)) {
+          h += '<div class="omni-row"><span class="grow"><b>' + _esc(c.id) +
+               '</b><br><span class="meta">' + _esc(c.health) +
+               (c.errors ? ' · ' + c.errors + ' errors' : '') + '</span></span>' +
+               '<span class="omni-tag ' + _esc(c.risk || 'low') + '">' + _esc(c.risk || '') + '</span></div>';
+        }
+        if (!badCaps.length) h += '<div class="omni-row"><span class="meta">All healthy.</span></div>';
+        h += '</div>';
+
+        // Plugin health
+        const plugs = (plugJ.ok && plugJ.plugins) || [];
+        const sick = plugs.filter(p => !p.enabled || p.failures > 0);
+        h += '<div class="omni-card"><h3>Plugins (' + plugs.length + ' known)</h3>';
+        if (!sick.length) h += '<div class="omni-row"><span class="meta">All enabled, no failures.</span></div>';
+        for (const p of sick.slice(0, 12)) {
+          h += '<div class="omni-row"><span class="grow"><b>' + _esc(p.name) + '</b>' +
+               '<br><span class="meta">' +
+               (p.auto_disabled ? 'auto-disabled · ' : '') +
+               (p.enabled ? 'enabled' : 'disabled') +
+               (p.failures ? ' · ' + p.failures + ' failures' : '') +
+               (p.last_error ? '<br>' + _esc(p.last_error) : '') +
+               '</span></span>' +
+               (p.enabled
+                 ? '<button class="obtn deny" onclick="omniPlugToggle(\'' + _esc(p.name) + '\',false)">Disable</button>'
+                 : '<button class="obtn allow" onclick="omniPlugToggle(\'' + _esc(p.name) + '\',true)">Enable</button>') +
+               '</div>';
+        }
+        h += '</div>';
+
         // Audit
         h += '<div class="omni-card"><h3>Audit Log (latest)</h3>';
         for (const a of ((auditJ.ok && auditJ.entries) || []).slice(0, 12)) {
@@ -887,6 +927,12 @@
         _omniPanel.innerHTML = '<div class="omni-card danger"><h3>Error</h3><div class="omni-row">' +
           _esc(e.message) + '</div></div>';
       }
+    }
+    async function omniPlugToggle(name, enabled) {
+      await _omniApi('/api/plugins/enable', { method: 'POST',
+        body: JSON.stringify({ name, enabled }) });
+      toast(enabled ? 'Plugin enabled' : 'Plugin disabled');
+      omniRefresh();
     }
     async function omniDecide(id, decision) {
       await _omniApi('/api/omni/approve', { method: 'POST', body: JSON.stringify({ id, decision }) });

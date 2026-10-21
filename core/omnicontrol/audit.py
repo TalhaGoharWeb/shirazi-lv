@@ -28,6 +28,8 @@ _PATTERNS = [
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "[REDACTED-API-KEY]"),
     # groq keys (gsk_ + 20+ chars)
     (re.compile(r"\bgsk_[0-9A-Za-z]{20,}\b"), "[REDACTED-API-KEY]"),
+    # openrouter keys (sk-or-v1- + 40+ chars)
+    (re.compile(r"\bsk-or-v1-[0-9A-Za-z]{20,}\b"), "[REDACTED-API-KEY]"),
 ]
 
 
