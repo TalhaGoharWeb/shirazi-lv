@@ -867,6 +867,62 @@ class DashboardServer:
             ok = policy.revoke_grant(gid, by="dashboard")
             return JSONResponse({"ok": ok})
 
+        @app.get("/api/capabilities")
+        async def capabilities(req: Request):
+            """Next steps: unified capability registry for the dashboard."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            from core.capabilities import get_registry
+            reg = get_registry()
+            if reg.count() == 0:
+                reg.populate_from_gateway()
+            caps = [{
+                "id": c.id, "description": c.description,
+                "source": c.source, "risk": c.risk,
+                "scopes": sorted(c.scopes), "health": c.health,
+                "invokes": c.invoke_count, "errors": c.error_count,
+                "timeout_s": c.timeout_s, "cancellable": c.cancellable,
+            } for c in reg.list()]
+            return JSONResponse({"ok": True, "count": len(caps),
+                                 "capabilities": caps})
+
+        @app.get("/api/plugins/health")
+        async def plugins_health(req: Request):
+            """Next steps: plugin health for the dashboard."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            from memory import config_manager as cm
+            try:
+                data = cm.load_api_keys()
+                enabled = data.get("plugins_enabled", {})
+                health = data.get("plugin_health", {})
+            except Exception:
+                enabled, health = {}, {}
+            # Merge: every known plugin gets a status row.
+            names = set(enabled) | set(health)
+            rows = [{
+                "name": n,
+                "enabled": bool(enabled.get(n, True)),
+                "failures": int(health.get(n, {}).get("failures", 0)),
+                "last_error": str(health.get(n, {}).get("last_error", ""))[:200],
+                "auto_disabled": bool(health.get(n, {}).get("auto_disabled", False)),
+            } for n in sorted(names)]
+            return JSONResponse({"ok": True, "plugins": rows})
+
+        @app.post("/api/plugins/enable")
+        async def plugins_enable(req: Request):
+            """Next steps: enable/disable a plugin from the dashboard."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            body = await req.json()
+            name = str(body.get("name", "")).strip()
+            enabled = bool(body.get("enabled", True))
+            if not name:
+                return JSONResponse({"ok": False, "error": "name required"})
+            from memory import config_manager as cm
+            cm.set_plugin_enabled(name, enabled)
+            return JSONResponse({"ok": True, "name": name, "enabled": enabled})
+
         @app.get("/api/omni/folders")
         async def omni_folders(req: Request):
             """Phase 3.3: list allow-listed folders for the Permission Center."""

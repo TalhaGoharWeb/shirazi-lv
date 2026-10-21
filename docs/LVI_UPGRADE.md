@@ -127,3 +127,32 @@ Goal: conversation that feels like a friend, ChatGPT-voice style.
    duplicate" window focusing for `open_app`.
 3. Remaining plain-string returns in `computer_settings.py` (type_text,
    press_key, scroll) can adopt `outcome` the same way.
+
+## History reconciliation (2026-10-21)
+
+The user's PC line (their snapshot commit "Fix onboarding UI: ghost widgets
++ clipped chips (280 green)", tree-identical reconstruction merged here as
+second parent) and the LVI line were merged into one history:
+
+- **Taken wholesale from the PC line** (LVI line had not touched them):
+  secrets-store integration (`core/secrets_store.py`; config keys resolve
+  OS credential store first, api_keys.json fallback), `core/profile.py` +
+  `core/instructions.py` (versioned user profile, one-turn overrides),
+  `core/onboarding.py`, `core/capabilities.py`, `core/health.py`,
+  `core/backup.py`, the memory-tools / my-settings / example plugins,
+  their dashboard + omnicontrol + memory-manager updates, and 13 new test
+  files (283 tests pass in the sandbox run; 2 `test_nextsteps` cases need
+  a real DISPLAY for pyautogui, and the Qt-collection files run on
+  Windows as before).
+- **Hand-merged**: main.py (their profile/instructions/health wiring +
+  the friendly pack), memory/config_manager.py (three-way clean after
+  line-ending normalization), README / WINDOWS_SETUP (LVI facts kept).
+- **Kept from the LVI line**: ui.py — the PC line's ui.py work (onboarding
+  overlays, +1,000 lines) targeted the retired Shirazi HUD that the user
+  replaced with Mark LVI's window. The onboarding *logic* module is in;
+  an onboarding panel for the LVI window is a separate build when wanted.
+- requirements.txt / setup.py kept the base/full split (the PC line's
+  single-file simplification dropped `setup.py --base`); stale "3D avatar"
+  comments refreshed — WebEngine is optional legacy now.
+- test_noorcore_v2 reuses an existing QApplication instance when another
+  test module created one first (single-app-per-process rule).
